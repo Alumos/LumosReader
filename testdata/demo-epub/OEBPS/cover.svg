@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1200" viewBox="0 0 800 1200">
+  <rect width="800" height="1200" fill="#254a38" />
+  <circle cx="640" cy="160" r="170" fill="#8fc9a5" opacity=".22" />
+  <path d="M85 0v1200" stroke="#d7eadc" stroke-width="18" opacity=".28" />
+  <text x="130" y="420" fill="#edf6ef" font-size="92" font-family="serif">微光</text>
+  <text x="130" y="535" fill="#edf6ef" font-size="92" font-family="serif">阅读样章</text>
+  <text x="134" y="910" fill="#bcd9c5" font-size="30" font-family="sans-serif" letter-spacing="8">LUMOS READER</text>
+  <text x="134" y="1010" fill="#edf6ef" font-size="34" font-family="sans-serif">Alumos</text>
+</svg>

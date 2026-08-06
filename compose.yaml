@@ -1,0 +1,22 @@
+services:
+  reader:
+    image: ghcr.io/alumos/lumosreader:latest
+    restart: unless-stopped
+    read_only: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      ADDR: :8080
+      LIBRARY_DIR: /library
+      DATA_DIR: /data
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?请在 .env 中设置 ADMIN_PASSWORD}
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-15m}
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    volumes:
+      - "${COMICS_DIR:?请设置漫画目录}:/library/漫画:ro"
+      - "${BOOKS_DIR:?请设置小说目录}:/library/小说:ro"
+      - "${STATE_DIR:-./data}:/data"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

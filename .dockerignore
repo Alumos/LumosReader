@@ -1,0 +1,16 @@
+.git
+.github
+.gitignore
+.env
+.env.example
+*_test.go
+README.md
+compose.yaml
+data
+demo-library
+docs
+scripts
+testdata
+web/node_modules
+web/dist
+.DS_Store

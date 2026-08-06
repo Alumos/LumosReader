@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">urn:uuid:lumos-reader-demo</dc:identifier>
+    <dc:title>微光阅读样章</dc:title>
+    <dc:creator>Alumos</dc:creator>
+    <dc:language>zh-CN</dc:language>
+    <meta property="dcterms:modified">2026-08-06T00:00:00Z</meta>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.svg" media-type="image/svg+xml" properties="cover-image" />
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav" />
+    <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml" />
+  </manifest>
+  <spine><itemref idref="chapter" /></spine>
+</package>

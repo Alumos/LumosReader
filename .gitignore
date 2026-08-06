@@ -1,0 +1,8 @@
+/.env
+/data/
+/demo-library/
+/library/
+/web/node_modules/
+/web/dist/
+!.gitkeep
+.DS_Store
