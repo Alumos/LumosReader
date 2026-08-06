@@ -54,6 +54,30 @@ const previousPageKeys = new Set(["ArrowLeft", "AudioVolumeUp", "VolumeUp"]);
 const nextPageKeys = new Set(["ArrowRight", "AudioVolumeDown", "VolumeDown"]);
 const comicWindowEnd = (current: number, total: number, visible = 1) => Math.min(total, current + visible + comicPreloadPages);
 if (import.meta.env.DEV) console.assert(comicWindowEnd(0, 100) === 21 && comicWindowEnd(95, 100, 2) === 100, "漫画预加载窗口异常");
+const objectWithGroupBy = Object as ObjectConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) => Record<PropertyKey, unknown[]> };
+const mapWithGroupBy = Map as MapConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => unknown) => Map<unknown, unknown[]> };
+
+function ensureGroupBy() {
+  if (typeof objectWithGroupBy.groupBy !== "function") Object.defineProperty(Object, "groupBy", { configurable: true, writable: true, value(items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) {
+    const groups: Record<PropertyKey, unknown[]> = Object.create(null);
+    let index = 0;
+    for (const item of items) (groups[key(item, index++)] ??= []).push(item);
+    return groups;
+  } });
+  if (typeof mapWithGroupBy.groupBy !== "function") Object.defineProperty(Map, "groupBy", { configurable: true, writable: true, value(items: Iterable<unknown>, key: (item: unknown, index: number) => unknown) {
+    const groups = new Map<unknown, unknown[]>();
+    let index = 0;
+    for (const item of items) {
+      const group = key(item, index++);
+      const values = groups.get(group);
+      if (values) values.push(item); else groups.set(group, [item]);
+    }
+    return groups;
+  } });
+}
+
+ensureGroupBy();
+if (import.meta.env.DEV) console.assert(objectWithGroupBy.groupBy!([1, 2], (value) => Number(value) % 2)[0]?.[0] === 2, "groupBy 兼容层异常");
 
 const defaultSettings: ReadingSettings = {
   template: "literary",
@@ -201,10 +225,14 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
 
   useEffect(() => {
     let active = true;
+    let initialized = false;
+    let currentSection = 0;
+    let preloadTimer = 0;
+    let preloadRun = 0;
     let element: FoliateViewElement | undefined;
     let pendingProgress: { position: number; locator: string } | undefined;
     const preloaded = new Set<number>();
-    const preload = (current: number) => {
+    const preload = async (current: number, run: number) => {
       const sections = element?.book?.sections;
       if (!book.is_comic || !sections) return;
       const end = comicWindowEnd(current, sections.length);
@@ -214,10 +242,22 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
         preloaded.delete(index);
       }
       for (let index = current + 1; index < end; index++) {
+        if (!active || run !== preloadRun) return;
         if (preloaded.has(index)) continue;
         preloaded.add(index);
-        void sections[index]?.load?.().catch(() => preloaded.delete(index));
+        try {
+          await sections[index]?.load?.();
+        } catch {
+          preloaded.delete(index);
+        }
       }
+    };
+    const schedulePreload = (current: number) => {
+      currentSection = current;
+      if (!initialized || !book.is_comic) return;
+      const run = ++preloadRun;
+      window.clearTimeout(preloadTimer);
+      preloadTimer = window.setTimeout(() => void preload(current, run), 200);
     };
     const persist = (keepalive = false) => {
       if (!pendingProgress) return;
@@ -232,7 +272,7 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
       root.current.append(element);
       element.addEventListener("relocate", ((event: CustomEvent) => {
         const section = Number(event.detail?.section?.current ?? event.detail?.index);
-        if (Number.isInteger(section)) preload(section);
+        if (Number.isInteger(section)) schedulePreload(section);
         const position = Number(event.detail?.fraction);
         if (!Number.isFinite(position)) return;
         const bounded = Math.max(0, Math.min(1, position));
@@ -250,15 +290,20 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
       const savedLocation = lastLocation.current ?? (book.locator?.startsWith("epubcfi(") ? book.locator : book.progress > 0 ? { fraction: book.progress } : undefined);
       await element.init({ lastLocation: savedLocation, showTextStart: !savedLocation });
       if (active) {
+        initialized = true;
         setChapters(flattenTOC(element.book?.toc ?? []));
         setStatus("ready");
+        schedulePreload(currentSection);
       }
     }).catch(() => active && setStatus("error"));
     return () => {
       active = false;
+      preloadRun++;
+      window.clearTimeout(preloadTimer);
       window.clearTimeout(saveTimer.current);
       persist(true);
       for (const index of preloaded) element?.book?.sections?.[index]?.unload?.();
+      preloaded.clear();
       element?.close();
       element?.remove();
       view.current = undefined;
