@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { BookCover } from "./Cover";
-import { Reader } from "./Reader";
+import { applyAppTheme, loadAppTheme, Reader } from "./Reader";
 import { Book, Bookshelf, ReadingStats, ServerInfo, api, fileStem } from "./model";
 
 type Section =
@@ -32,6 +32,7 @@ type Section =
 type AccountPanel = "stats" | "server" | "shelves";
 
 function App() {
+  const [theme, setTheme] = useState(loadAppTheme);
   const [server, setServer] = useState<ServerInfo>();
   const [authenticated, setAuthenticated] = useState(false);
   const [books, setBooks] = useState<Book[]>([]);
@@ -42,6 +43,11 @@ function App() {
   const [panel, setPanel] = useState<AccountPanel>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    applyAppTheme(theme);
+    localStorage.setItem("lumos-app-theme", JSON.stringify(theme));
+  }, [theme]);
 
   const loadBooks = useCallback(async () => {
     const result = await api<{ books: Book[] }>("/api/books");
@@ -78,7 +84,7 @@ function App() {
 
   if (reading) {
     const collection = books.filter((book) => book.series && book.series === reading.series && book.shelf === reading.shelf && book.category === reading.category);
-    return <Reader book={reading} collection={collection} onBook={setReading} onClose={() => {
+    return <Reader book={reading} collection={collection} theme={theme} onTheme={setTheme} onBook={setReading} onClose={() => {
       setReading(undefined);
       loadBooks().catch(() => undefined);
     }} />;

@@ -38,6 +38,9 @@ type ReadingTemplate = {
   settings: Omit<ReadingSettings, "template">;
   custom?: boolean;
 };
+export type AppThemeMode = "solid" | "gradient" | "eink";
+export type AppTheme = { mode: AppThemeMode; accent: string; secondary: string };
+export const defaultAppTheme: AppTheme = { mode: "solid", accent: "#2f6b50", secondary: "#a7cdb1" };
 type Chapter = { label: string; href: string; level: number };
 type ChromeItem =
   | { kind: "volume"; book: Book; label: string; number: number }
@@ -98,6 +101,49 @@ const defaultSettings: ReadingSettings = {
   showPageButtons: true,
 };
 
+export function loadAppTheme(): AppTheme {
+  try {
+    const saved = JSON.parse(localStorage.getItem("lumos-app-theme") ?? "{}");
+    return {
+      mode: saved.mode === "gradient" || saved.mode === "eink" ? saved.mode : defaultAppTheme.mode,
+      accent: validHex(saved.accent) ? saved.accent : defaultAppTheme.accent,
+      secondary: validHex(saved.secondary) ? saved.secondary : defaultAppTheme.secondary,
+    };
+  } catch {
+    return defaultAppTheme;
+  }
+}
+
+export function applyAppTheme(theme: AppTheme) {
+  const root = document.documentElement;
+  const eink = theme.mode === "eink";
+  const accent = eink ? "#000000" : theme.accent;
+  const secondary = eink ? "#000000" : theme.secondary;
+  const gradient = theme.mode === "gradient" ? `linear-gradient(120deg, ${hexWithAlpha(accent, .1)}, ${hexWithAlpha(secondary, .1)} 58%, #ffffff)` : "#f7f8f5";
+  root.dataset.appTheme = theme.mode;
+  root.style.setProperty("--green", accent);
+  root.style.setProperty("--green-soft", hexWithAlpha(accent, eink ? 0.12 : 0.14));
+  root.style.setProperty("--theme-gradient", eink ? "#ffffff" : theme.mode === "gradient" ? `linear-gradient(120deg, ${hexWithAlpha(accent, .2)}, ${hexWithAlpha(secondary, .2)} 58%, #ffffff)` : "#f1f6f0");
+  root.style.setProperty("--app-bg", eink ? "#ffffff" : gradient);
+  root.style.setProperty("--surface", eink ? "#ffffff" : "#ffffff");
+  root.style.setProperty("--surface-soft", eink ? "#ffffff" : "#fbfcfa");
+  root.style.setProperty("--ui-text", eink ? "#000000" : "#18201c");
+  root.style.setProperty("--ui-muted", eink ? "#444444" : "#707b74");
+  root.style.setProperty("--ui-border", eink ? "#000000" : "#e1e5df");
+  root.style.setProperty("--border", eink ? "#000000" : "#e1e5df");
+  root.style.setProperty("--muted", eink ? "#444444" : "#707b74");
+  root.style.setProperty("--ui-shadow", eink ? "none" : "0 18px 55px rgba(38, 49, 42, .12)");
+}
+
+function validHex(value: unknown): value is string {
+  return typeof value === "string" && /^#[\da-f]{6}$/i.test(value);
+}
+
+function hexWithAlpha(hex: string, alpha: number) {
+  const value = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${value >> 16}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+}
+
 const builtInTemplates: ReadingTemplate[] = [
   { id: "web", name: "网文阅读", hint: "大字舒展", settings: { ...withoutTemplate(defaultSettings), backgroundColor: "#ffffff", textColor: "#202522", fontSize: 21, lineHeight: 1.95, paragraphSpacing: 1, letterSpacing: 0.02 } },
   { id: "literary", name: "精品文学", hint: "纸感留白", settings: withoutTemplate(defaultSettings) },
@@ -106,7 +152,7 @@ const builtInTemplates: ReadingTemplate[] = [
   { id: "night", name: "夜间阅读", hint: "低亮深色", settings: { ...withoutTemplate(defaultSettings), backgroundColor: "#161a18", textColor: "#d9ddd9", lineHeight: 1.85 } },
 ];
 
-export function Reader({ book, collection, onBook, onClose }: { book: Book; collection: Book[]; onBook: (book: Book) => void; onClose: () => void }) {
+export function Reader({ book, collection, theme, onTheme, onBook, onClose }: { book: Book; collection: Book[]; theme: AppTheme; onTheme: (theme: AppTheme) => void; onBook: (book: Book) => void; onClose: () => void }) {
   const [progress, setProgress] = useState(book.progress);
   const [settings, setSettings] = useState(loadSettings);
   const [customTemplates, setCustomTemplates] = useState(loadTemplates);
@@ -118,6 +164,7 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
   const styleable = !book.is_comic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3" || book.format === "txt");
   const direction = settings.readingDirection === "auto" ? book.page_direction ?? "ltr" : settings.readingDirection;
   const customFontURL = settings.font === "custom" && settings.fontFile ? `/api/fonts/${encodeURIComponent(settings.fontFile)}` : "";
+  const activeSettings = theme.mode === "eink" ? { ...settings, backgroundColor: "#ffffff", textColor: "#000000", animation: "none" as const } : settings;
   const connectControls = useCallback((value?: ReaderControls) => setControls(value), []);
   const onTurn = useCallback(() => {
     if (++turns.current < 2) return;
@@ -148,23 +195,25 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
     return () => window.removeEventListener("keydown", onKey);
   }, [controls]);
 
-  return <div className={`reader ${immersive && !chromeOpen && !settingsOpen ? "immersive" : ""}`} style={{ "--reader-bg": settings.backgroundColor, "--reader-fg": settings.textColor } as CSSProperties}>
+  return <div className={`reader ${immersive ? "immersive" : ""}`} style={{ "--reader-bg": activeSettings.backgroundColor, "--reader-fg": activeSettings.textColor } as CSSProperties}>
     <header className="reader-bar">
       <button onClick={onClose}><ArrowLeft size={19} /><span>返回书库</span></button>
       <div><strong>{book.title}</strong><small>{book.format.toUpperCase()}</small></div>
       <div className="reader-actions"><span>{Math.round(progress * 100)}%</span><button aria-label="阅读设置" className={settingsOpen ? "active" : ""} onClick={() => { setChromeOpen(false); setSettingsOpen((open) => !open); }}><Settings2 size={18} /></button></div>
     </header>
     <div className="reader-body">
-      {book.format === "cbz" && <ComicReader book={book} settings={settings} direction={direction} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
-      {book.format === "txt" && <TextReader book={book} settings={settings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
-      {(book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={settings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
-      {book.format === "pdf" && <PDFReader book={book} settings={settings} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
+      {book.format === "cbz" && <ComicReader book={book} settings={activeSettings} direction={direction} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
+      {book.format === "txt" && <TextReader book={book} settings={activeSettings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
+      {(book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={activeSettings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
+      {book.format === "pdf" && <PDFReader book={book} settings={activeSettings} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
     </div>
     <small className="reader-location">{controls?.location ?? `${Math.round(progress * 100)}%`}</small>
-    {chromeOpen && <ReaderChrome book={book} collection={collection} progress={progress} controls={controls} onBook={onBook} onClose={() => setChromeOpen(false)} />}
+    {chromeOpen && <ReaderChrome book={book} collection={collection} progress={progress} controls={controls} onBook={onBook} onSettings={() => { setChromeOpen(false); setSettingsOpen(true); }} onClose={() => setChromeOpen(false)} />}
     {settingsOpen && <SettingsPanel
       settings={settings}
       templates={[...builtInTemplates, ...customTemplates]}
+      theme={theme}
+      onTheme={onTheme}
       styleable={styleable}
       comic={book.is_comic}
       onChange={setSettings}
@@ -180,10 +229,11 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
   </div>;
 }
 
-function ReaderChrome({ book, collection, progress, controls, onBook, onClose }: { book: Book; collection: Book[]; progress: number; controls?: ReaderControls; onBook: (book: Book) => void; onClose: () => void }) {
+function ReaderChrome({ book, collection, progress, controls, onBook, onSettings, onClose }: { book: Book; collection: Book[]; progress: number; controls?: ReaderControls; onBook: (book: Book) => void; onSettings: () => void; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [descending, setDescending] = useState(false);
   const [page, setPage] = useState(0);
+  const [chaptersOpen, setChaptersOpen] = useState(true);
   const volumes = collection.length > 1 ? [...collection].sort((a, b) => a.file_name.localeCompare(b.file_name, undefined, { numeric: true })) : [];
   const chapters = controls?.chapters ?? [];
   const normalized = query.trim().toLocaleLowerCase();
@@ -202,7 +252,7 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onClose }:
     setPage(Math.floor((volumes.length + index) / 20));
   };
   return <div className="reader-chrome">
-    {(volumes.length > 0 || chapters.length > 0) && <aside className="chapter-panel">
+    {chaptersOpen && (volumes.length > 0 || chapters.length > 0) && <aside className="chapter-panel">
       <header><ListTree size={17} /><strong>章节与卷册</strong><button aria-label="收起" onClick={onClose}><X size={16} /></button></header>
       <div className="chapter-tools"><input type="search" aria-label="搜索章节或卷册" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索章节或卷册" /><button aria-label="定位当前章节" disabled={!controls?.currentChapter} onClick={locateCurrent}><LocateFixed size={13} />定位</button><button aria-label="切换排列顺序" onClick={() => { setDescending((value) => !value); setPage(0); }}>{descending ? "倒序" : "顺序"}</button></div>
       {shown.some((item) => item.kind === "volume") && <section className="chapter-list"><small>卷册</small>{shown.map((item) => item.kind === "volume" && <button key={item.book.id} className={item.book.id === book.id ? "active" : ""} onClick={() => onBook(item.book)}><span>{item.number}</span>{item.label}</button>)}</section>}
@@ -210,10 +260,13 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onClose }:
       {!shown.length && <p className="chapter-empty">没有匹配的章节或卷册</p>}
       <footer className="chapter-pagination"><button aria-label="上一页目录" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={16} /></button><span>{currentPage + 1} / {pageCount}</span><button aria-label="下一页目录" disabled={currentPage + 1 === pageCount} onClick={() => setPage(currentPage + 1)}><ChevronRight size={16} /></button></footer>
     </aside>}
+    <div className="floating-reader-head"><strong>{book.title}</strong><small>{book.format.toUpperCase()}</small></div>
     <div className="floating-reader-bar">
       <button aria-label="上一页" onClick={controls?.previous}><ChevronLeft /></button>
       <div><span>{Math.round(progress * 100)}%</span><input aria-label="阅读进度" type="range" min={0} max={1} step={0.001} value={progress} disabled={!controls?.seek} onChange={(event) => controls?.seek?.(Number(event.target.value))} /></div>
       <button aria-label="下一页" onClick={controls?.next}><ChevronRight /></button>
+      <button className={`reader-menu-button ${chaptersOpen ? "active" : ""}`} aria-label="章节与卷册" aria-pressed={chaptersOpen} onClick={() => setChaptersOpen((open) => !open)}><ListTree size={17} /><span>章节</span></button>
+      <button className="reader-menu-button" aria-label="阅读设置" onClick={onSettings}><Settings2 size={17} /><span>设置</span></button>
     </div>
   </div>;
 }
@@ -568,9 +621,11 @@ function PageZones({ visible, onLeft, onCenter, onRight }: { visible: boolean; o
   </>;
 }
 
-function SettingsPanel({ settings, templates, styleable, comic, onChange, onClose, onFont, onSave, onDelete }: {
+function SettingsPanel({ settings, templates, theme, onTheme, styleable, comic, onChange, onClose, onFont, onSave, onDelete }: {
   settings: ReadingSettings;
   templates: ReadingTemplate[];
+  theme: AppTheme;
+  onTheme: (theme: AppTheme) => void;
   styleable: boolean;
   comic: boolean;
   onChange: (value: ReadingSettings | ((current: ReadingSettings) => ReadingSettings)) => void;
@@ -584,6 +639,7 @@ function SettingsPanel({ settings, templates, styleable, comic, onChange, onClos
   const [fontBusy, setFontBusy] = useState(false);
   const [fontError, setFontError] = useState("");
   const patch = (value: Partial<ReadingSettings>) => onChange((current) => ({ ...current, ...value }));
+  const patchTheme = (value: Partial<AppTheme>) => onTheme({ ...theme, ...value });
   const loadFonts = useCallback(() => api<{ fonts: ServerFont[] }>("/api/fonts").then((result) => setFonts(result.fonts)), []);
   useEffect(() => {
     loadFonts().catch((reason) => setFontError(reason.message));
@@ -616,6 +672,7 @@ function SettingsPanel({ settings, templates, styleable, comic, onChange, onClos
       <form className="save-template" onSubmit={(event) => { event.preventDefault(); const name = templateName.trim(); if (name) { onSave(name); setTemplateName(""); } }}><input value={templateName} maxLength={24} onChange={(event) => setTemplateName(event.target.value)} placeholder="新模板名称" /><button disabled={!templateName.trim()}><Save size={14} />保存当前参数</button></form>
     </section>
     <section className="setting-fields">
+      <ThemeSettings theme={theme} onTheme={onTheme} />
       <label>字体<select value={settings.font} onChange={(event) => patch({ font: event.target.value as ReadingSettings["font"] })}><option value="book">书籍原字体</option><option value="serif">宋体 / 衬线</option><option value="sans">黑体 / 无衬线</option><option value="system">系统字体</option><option value="custom" disabled={!settings.fontFile}>服务端字体</option></select></label>
       <label>服务端字体（正文生效）<select aria-label="服务端字体" value={settings.fontFile} onChange={(event) => patch({ fontFile: event.target.value, font: event.target.value ? "custom" : "serif" })}><option value="">选择字体</option>{fonts.map((font) => <option key={font.name} value={font.name}>{font.name}</option>)}</select></label>
       <label className="font-upload">{fontBusy ? "正在上传…" : "上传字体到服务端"}<input disabled={fontBusy} type="file" accept=".ttf,.otf,.woff,.woff2" onInput={upload} /></label>
@@ -634,6 +691,18 @@ function SettingsPanel({ settings, templates, styleable, comic, onChange, onClos
       {comic && <label>漫画阅读方向<select value={settings.readingDirection} onChange={(event) => patch({ readingDirection: event.target.value as ReadingSettings["readingDirection"] })}><option value="auto">自动识别</option><option value="rtl">日漫 · 从右向左</option><option value="ltr">普通 · 从左向右</option></select></label>}
     </section>
   </aside>;
+}
+
+export function ThemeSettings({ theme, onTheme }: { theme: AppTheme; onTheme: (theme: AppTheme) => void }) {
+  const patch = (value: Partial<AppTheme>) => onTheme({ ...theme, ...value });
+  return <div className="theme-settings">
+    <label>界面主题<select value={theme.mode} onChange={(event) => patch({ mode: event.target.value as AppThemeMode })}><option value="solid">浅色简约</option><option value="gradient">莫奈渐变</option><option value="eink">E-INK 黑白</option></select></label>
+    {theme.mode !== "eink" && <>
+      <div className="theme-presets"><span>莫奈取色</span><div>{[["睡莲", "#557f83", "#d7c8a7"], ["花园", "#6f9278", "#d6b58c"], ["黄昏", "#a45d4d", "#e0ad72"]].map(([name, accent, secondary]) => <button key={name} type="button" title={name} aria-label={`使用${name}配色`} style={{ background: `linear-gradient(135deg, ${accent}, ${secondary})` }} onClick={() => onTheme({ mode: "gradient", accent, secondary })} />)}</div></div>
+      <label className="color-field">主色<input aria-label="界面主色" type="color" value={theme.accent} onChange={(event) => patch({ accent: event.target.value })} /></label>
+      {theme.mode === "gradient" && <label className="color-field">渐变色<input aria-label="界面渐变色" type="color" value={theme.secondary} onChange={(event) => patch({ secondary: event.target.value })} /></label>}
+    </>}
+  </div>;
 }
 
 function Range({ label, value, min, max, step, suffix = "", onChange }: { label: string; value: number; min: number; max: number; step: number; suffix?: string; onChange: (value: number) => void }) {
