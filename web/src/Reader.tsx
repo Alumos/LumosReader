@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ListTree,
   LoaderCircle,
+  LocateFixed,
   Save,
   Settings2,
   Trash2,
@@ -46,6 +47,8 @@ type ReaderControls = {
   next: () => void;
   seek?: (progress: number) => void;
   chapters?: Chapter[];
+  location?: string;
+  currentChapter?: string;
   goToChapter?: (href: string) => void;
 };
 
@@ -157,6 +160,7 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
       {(book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={settings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
       {book.format === "pdf" && <PDFReader book={book} settings={settings} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
     </div>
+    <small className="reader-location">{controls?.location ?? `${Math.round(progress * 100)}%`}</small>
     {chromeOpen && <ReaderChrome book={book} collection={collection} progress={progress} controls={controls} onBook={onBook} onClose={() => setChromeOpen(false)} />}
     {settingsOpen && <SettingsPanel
       settings={settings}
@@ -190,12 +194,19 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onClose }:
   const pageCount = Math.max(1, Math.ceil(items.length / 20));
   const currentPage = Math.min(page, pageCount - 1);
   const shown = items.slice(currentPage * 20, currentPage * 20 + 20);
+  const locateCurrent = () => {
+    const index = chapters.findIndex((chapter) => chapter.href === controls?.currentChapter);
+    if (index < 0) return;
+    setQuery("");
+    setDescending(false);
+    setPage(Math.floor((volumes.length + index) / 20));
+  };
   return <div className="reader-chrome">
     {(volumes.length > 0 || chapters.length > 0) && <aside className="chapter-panel">
       <header><ListTree size={17} /><strong>章节与卷册</strong><button aria-label="收起" onClick={onClose}><X size={16} /></button></header>
-      <div className="chapter-tools"><input type="search" aria-label="搜索章节或卷册" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索章节或卷册" /><button aria-label="切换排列顺序" onClick={() => { setDescending((value) => !value); setPage(0); }}>{descending ? "倒序" : "顺序"}</button></div>
+      <div className="chapter-tools"><input type="search" aria-label="搜索章节或卷册" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索章节或卷册" /><button aria-label="定位当前章节" disabled={!controls?.currentChapter} onClick={locateCurrent}><LocateFixed size={13} />定位</button><button aria-label="切换排列顺序" onClick={() => { setDescending((value) => !value); setPage(0); }}>{descending ? "倒序" : "顺序"}</button></div>
       {shown.some((item) => item.kind === "volume") && <section className="chapter-list"><small>卷册</small>{shown.map((item) => item.kind === "volume" && <button key={item.book.id} className={item.book.id === book.id ? "active" : ""} onClick={() => onBook(item.book)}><span>{item.number}</span>{item.label}</button>)}</section>}
-      {shown.some((item) => item.kind === "chapter") && <section className="chapter-list"><small>目录</small>{shown.map((item) => item.kind === "chapter" && <button key={`${item.chapter.href}-${item.number}`} style={{ "--level": item.chapter.level } as CSSProperties} onClick={() => controls?.goToChapter?.(item.chapter.href)}><span>{item.number}</span>{item.label}</button>)}</section>}
+      {shown.some((item) => item.kind === "chapter") && <section className="chapter-list"><small>目录</small>{shown.map((item) => item.kind === "chapter" && <button key={`${item.chapter.href}-${item.number}`} className={item.chapter.href === controls?.currentChapter ? "active" : ""} style={{ "--level": item.chapter.level } as CSSProperties} onClick={() => controls?.goToChapter?.(item.chapter.href)}><span>{item.number}</span>{item.label}</button>)}</section>}
       {!shown.length && <p className="chapter-empty">没有匹配的章节或卷册</p>}
       <footer className="chapter-pagination"><button aria-label="上一页目录" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ChevronLeft size={16} /></button><span>{currentPage + 1} / {pageCount}</span><button aria-label="下一页目录" disabled={currentPage + 1 === pageCount} onClick={() => setPage(currentPage + 1)}><ChevronRight size={16} /></button></footer>
     </aside>}
@@ -222,8 +233,14 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
   const saveTimer = useRef(0);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [location, setLocation] = useState("");
+  const [currentChapter, setCurrentChapter] = useState("");
 
   useEffect(() => {
+    setStatus("loading");
+    setChapters([]);
+    setLocation("");
+    setCurrentChapter("");
     let active = true;
     let initialized = false;
     let currentSection = 0;
@@ -273,6 +290,11 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
       element.addEventListener("relocate", ((event: CustomEvent) => {
         const section = Number(event.detail?.section?.current ?? event.detail?.index);
         if (Number.isInteger(section)) schedulePreload(section);
+        const chapter = event.detail?.tocItem;
+        const page = event.detail?.location;
+        const pageLabel = Number.isInteger(page?.current) && Number.isInteger(page?.total) ? `第 ${page.current + 1} / ${page.total} 页` : "";
+        setLocation([chapter?.label, pageLabel].filter(Boolean).join(" · "));
+        setCurrentChapter(typeof chapter?.href === "string" ? chapter.href : "");
         const position = Number(event.detail?.fraction);
         if (!Number.isFinite(position)) return;
         const bounded = Math.max(0, Math.min(1, position));
@@ -329,10 +351,12 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
       next: () => void move("next"),
       seek: (value) => void view.current?.goToFraction(value),
       chapters,
+      location,
+      currentChapter,
       goToChapter: (href) => void view.current?.goTo(href),
     });
     return () => onControls(undefined);
-  }, [chapters, move, onControls, status]);
+  }, [chapters, currentChapter, location, move, onControls, status]);
 
   return <div className="reflow-stage">
     <div ref={root} className="foliate-host" />
@@ -446,9 +470,9 @@ function ComicReader({ book, settings, direction, onCenter, onTurn, onControls, 
     return () => window.clearTimeout(timer);
   }, [book.id, onProgress, page, pages.length]);
   useEffect(() => {
-    onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, pages.length - 1))) });
+    onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, pages.length - 1))), location: pages.length ? `第 ${page + 1} / ${pages.length} 页` : undefined });
     return () => onControls(undefined);
-  }, [onControls, pages.length, turn]);
+  }, [onControls, page, pages.length, turn]);
   if (!pages.length) return <ReaderLoading />;
   return <div className="comic-stage">
     <PageZones visible={settings.showPageButtons} onLeft={() => turn(-1)} onCenter={onCenter} onRight={() => turn(1)} />
@@ -526,9 +550,9 @@ function PDFReader({ book, settings, onCenter, onTurn, onControls, onProgress }:
   }, [book.id, count, onProgress, page]);
 
   useEffect(() => {
-    onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, count - 1))) });
+    onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, count - 1))), location: count ? `第 ${page + 1} / ${count} 页` : undefined });
     return () => onControls(undefined);
-  }, [count, onControls, turn]);
+  }, [count, onControls, page, turn]);
   if (!count) return <ReaderLoading />;
   return <div ref={stage} className="pdf-stage">
     <PageZones visible={settings.showPageButtons} onLeft={() => turn(-1)} onCenter={onCenter} onRight={() => turn(1)} />

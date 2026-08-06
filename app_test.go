@@ -224,7 +224,7 @@ func TestContentRangeAndSecurityHeaders(t *testing.T) {
 	if response.Code != http.StatusPartialContent || response.Body.String() != "2345" {
 		t.Fatalf("got status %d body %q", response.Code, response.Body.String())
 	}
-	if response.Header().Get("Content-Range") != "bytes 2-5/10" || response.Header().Get("Content-Security-Policy") == "" {
+	if csp := response.Header().Get("Content-Security-Policy"); response.Header().Get("Content-Range") != "bytes 2-5/10" || !strings.Contains(csp, "frame-ancestors 'self'") {
 		t.Fatalf("missing range or security headers: %v", response.Header())
 	}
 	if response.Header().Get("Cache-Control") != "private, no-store" {
