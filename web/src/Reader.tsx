@@ -49,6 +49,12 @@ type ReaderControls = {
   goToChapter?: (href: string) => void;
 };
 
+const comicPreloadPages = 20;
+const previousPageKeys = new Set(["ArrowLeft", "AudioVolumeUp", "VolumeUp"]);
+const nextPageKeys = new Set(["ArrowRight", "AudioVolumeDown", "VolumeDown"]);
+const comicWindowEnd = (current: number, total: number, visible = 1) => Math.min(total, current + visible + comicPreloadPages);
+if (import.meta.env.DEV) console.assert(comicWindowEnd(0, 100) === 21 && comicWindowEnd(95, 100, 2) === 100, "漫画预加载窗口异常");
+
 const defaultSettings: ReadingSettings = {
   template: "literary",
   backgroundColor: "#f7f1e4",
@@ -103,6 +109,17 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
   }, [book]);
   useEffect(() => { localStorage.setItem("lumos-reading-settings", JSON.stringify(settings)); }, [settings]);
   useEffect(() => { localStorage.setItem("lumos-reading-templates", JSON.stringify(customTemplates)); }, [customTemplates]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!controls || event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+      const action = previousPageKeys.has(event.key) ? "previous" : nextPageKeys.has(event.key) ? "next" : undefined;
+      if (!action) return;
+      event.preventDefault();
+      controls[action]();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [controls]);
 
   return <div className={`reader ${immersive && !chromeOpen && !settingsOpen ? "immersive" : ""}`} style={{ "--reader-bg": settings.backgroundColor, "--reader-fg": settings.textColor } as CSSProperties}>
     <header className="reader-bar">
@@ -186,6 +203,22 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
     let active = true;
     let element: FoliateViewElement | undefined;
     let pendingProgress: { position: number; locator: string } | undefined;
+    const preloaded = new Set<number>();
+    const preload = (current: number) => {
+      const sections = element?.book?.sections;
+      if (!book.is_comic || !sections) return;
+      const end = comicWindowEnd(current, sections.length);
+      for (const index of preloaded) {
+        if (index >= current && index < end) continue;
+        sections[index]?.unload?.();
+        preloaded.delete(index);
+      }
+      for (let index = current + 1; index < end; index++) {
+        if (preloaded.has(index)) continue;
+        preloaded.add(index);
+        void sections[index]?.load?.().catch(() => preloaded.delete(index));
+      }
+    };
     const persist = (keepalive = false) => {
       if (!pendingProgress) return;
       const saved = pendingProgress;
@@ -198,6 +231,8 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
       view.current = element;
       root.current.append(element);
       element.addEventListener("relocate", ((event: CustomEvent) => {
+        const section = Number(event.detail?.section?.current ?? event.detail?.index);
+        if (Number.isInteger(section)) preload(section);
         const position = Number(event.detail?.fraction);
         if (!Number.isFinite(position)) return;
         const bounded = Math.max(0, Math.min(1, position));
@@ -223,6 +258,7 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
       active = false;
       window.clearTimeout(saveTimer.current);
       persist(true);
+      for (const index of preloaded) element?.book?.sections?.[index]?.unload?.();
       element?.close();
       element?.remove();
       view.current = undefined;
@@ -252,15 +288,6 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
     });
     return () => onControls(undefined);
   }, [chapters, move, onControls, status]);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "ArrowLeft") void move("previous");
-      if (event.key === "ArrowRight") void move("next");
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [move]);
 
   return <div className="reflow-stage">
     <div ref={root} className="foliate-host" />
@@ -377,19 +404,14 @@ function ComicReader({ book, settings, direction, onCenter, onTurn, onControls, 
     onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, pages.length - 1))) });
     return () => onControls(undefined);
   }, [onControls, pages.length, turn]);
-  useEffect(() => {
-    const keyboard = (event: KeyboardEvent) => {
-      if (event.key === "ArrowLeft") turn(-1);
-      if (event.key === "ArrowRight") turn(1);
-    };
-    window.addEventListener("keydown", keyboard);
-    return () => window.removeEventListener("keydown", keyboard);
-  }, [turn]);
   if (!pages.length) return <ReaderLoading />;
   return <div className="comic-stage">
     <PageZones visible={settings.showPageButtons} onLeft={() => turn(-1)} onCenter={onCenter} onRight={() => turn(1)} />
-    <div key={`${page}-${settings.columns}`} className={`comic-pages ${direction} turn-${settings.animation}`}>
-      {pages.slice(page, page + settings.columns).map((item, index) => <img key={item.index} src={item.url} alt={`第 ${page + index + 1} 页`} />)}
+    <div className={`comic-pages ${direction}`}>
+      {pages.slice(page, comicWindowEnd(page, pages.length, settings.columns)).map((item, index) => {
+        const visible = index < settings.columns;
+        return <img key={item.index} className={visible ? `turn-${settings.animation}` : "comic-preload"} src={item.url} alt={visible ? `第 ${page + index + 1} 页` : ""} aria-hidden={!visible} loading="eager" decoding="async" fetchPriority={visible ? "high" : "low"} />;
+      })}
     </div>
   </div>;
 }

@@ -178,11 +178,12 @@ function Navigation({ books, section, onChange, compact = false }: { books: Book
   });
   const groups = [
     { kind: "comic" as const, label: "漫画", Icon: PanelsTopLeft },
-    { kind: "book" as const, label: "小说", Icon: BookOpen },
+    { kind: "book" as const, label: "图书", Icon: BookOpen },
   ];
   return <nav>
     <button className={`nav-item ${section.kind === "all" ? "active" : ""}`} onClick={() => onChange({ kind: "all" })}><Library size={18} />浏览全库</button>
     <button className={`nav-item ${section.kind === "recent" ? "active" : ""}`} onClick={() => onChange({ kind: "recent" })}><Clock3 size={18} />最近阅读</button>
+    {compact && groups.map(({ kind, label, Icon }) => <button key={kind} className={`nav-item library-kind ${section.kind === "collection" && section.shelfKind === kind ? "active" : ""}`} onClick={() => onChange({ kind: "collection", shelfKind: kind })}><Icon size={18} />{label}</button>)}
     {!compact && <div className="shelf-navigation">
       <small>内容书架</small>
       {groups.map(({ kind, label, Icon }) => <div key={kind} className={`library-group ${kind}`}>
@@ -285,7 +286,7 @@ function ShelvesPanel({ onSaved, onClose }: { onSaved: () => Promise<void>; onCl
     <div className="directory-status"><p>{automatic && !shelves.length ? "当前按挂载目录自动生成书架。添加配置后，只扫描指定目录。" : `目录相对于只读挂载的书库根目录，已发现 ${directories.length} 个。`}</p><button type="button" onClick={() => refreshDirectories().catch((reason) => setError(reason.message))}><RefreshCw size={14} />刷新目录</button></div>
     <div className="shelf-settings-list">{shelves.map((shelf, index) => <div key={index} className="shelf-setting">
       <label>书架名称<input value={shelf.name} maxLength={64} onChange={(event) => setShelves((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} placeholder="例如：漫画" /></label>
-      <label>内容类型<select aria-label={`${shelf.name || `书架 ${index + 1}`}内容类型`} value={shelf.kind} onChange={(event) => setShelves((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, kind: event.target.value as Bookshelf["kind"] } : item))}><option value="auto">自动识别</option><option value="book">小说</option><option value="comic">漫画</option></select></label>
+      <label>内容类型<select aria-label={`${shelf.name || `书架 ${index + 1}`}内容类型`} value={shelf.kind} onChange={(event) => setShelves((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, kind: event.target.value as Bookshelf["kind"] } : item))}><option value="auto">自动识别</option><option value="book">图书</option><option value="comic">漫画</option></select></label>
       <button type="button" aria-label="删除书架" onClick={() => setShelves((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={16} /></button>
       <label className="directory-field">扫描目录<div><input value={shelf.path} onFocus={() => refreshDirectories().catch(() => undefined)} onChange={(event) => setShelves((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, path: event.target.value } : item))} placeholder="例如：漫画/爱情" /><button type="button" aria-expanded={picking === index} onClick={() => { setPicking((current) => current === index ? undefined : index); refreshDirectories().catch(() => undefined); }}><Folder size={14} />目录树</button></div></label>
       {picking === index && <DirectoryPicker directories={directories} value={shelf.path} onChange={(path) => setShelves((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, path } : item))} />}
@@ -417,7 +418,7 @@ function sectionKey(section: Section) {
 
 function sectionLabel(section: Section) {
   if (section.kind === "recent") return "阅读足迹";
-  if (section.kind === "collection") return section.shelfKind === "comic" ? "漫画" : "小说";
+  if (section.kind === "collection") return section.shelfKind === "comic" ? "漫画" : "图书";
   if (section.kind === "shelf") return section.category ? `${section.shelf} / ${section.category}` : section.shelf;
   return "全部书籍";
 }

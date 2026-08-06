@@ -15,9 +15,14 @@ interface FoliateTOCItem {
   subitems?: FoliateTOCItem[];
 }
 
+interface FoliateSection {
+  load?: () => Promise<unknown>;
+  unload?: () => void;
+}
+
 interface FoliateViewElement extends HTMLElement {
   renderer?: FoliateRenderer;
-  book?: { toc?: FoliateTOCItem[] };
+  book?: { toc?: FoliateTOCItem[]; sections?: FoliateSection[] };
   open: (book: unknown) => Promise<void>;
   init: (options: { lastLocation?: unknown; showTextStart?: boolean }) => Promise<void>;
   prev: () => Promise<void>;
