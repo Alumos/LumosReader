@@ -55,6 +55,22 @@ const openBook = async (title) => {
     ua: navigator.userAgent
   })`);
   result.pageRequests = requests.slice(before).filter((url) => url.includes("/pages"));
+  if (title === "固定版式测试") {
+    result.spreadTransition = await evaluate(`(async () => {
+      const view = document.querySelector('foliate-view');
+      await view.goTo({ index: 0 });
+      await view.next();
+      const counts = [view.renderer.getContents().length];
+      const sampler = setInterval(() => counts.push(view.renderer.getContents().length), 1);
+      await view.next();
+      clearInterval(sampler);
+      counts.push(view.renderer.getContents().length);
+      return { minimumFrames: Math.min(...counts), hostAnimations: view.getAnimations().length };
+    })()`);
+    if (result.spreadTransition.minimumFrames < 1 || result.spreadTransition.hostAnimations) {
+      throw new Error(`${title}: blank or duplicate-animation frame detected ${JSON.stringify(result.spreadTransition)}`);
+    }
+  }
   if (result.error) throw new Error(`${title}: ${result.error}`);
   await evaluate("document.querySelector('.reader-exit').click()");
   await waitFor("document.querySelector('.book-grid')");

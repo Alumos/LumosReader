@@ -5,6 +5,16 @@
     <dc:title>固定版式测试</dc:title>
     <meta property="rendition:layout">pre-paginated</meta>
   </metadata>
-  <manifest><item id="page" href="page.xhtml" media-type="application/xhtml+xml" /></manifest>
-  <spine page-progression-direction="rtl"><itemref idref="page" /></spine>
+  <manifest>
+    <item id="page1" href="page.xhtml" media-type="application/xhtml+xml" />
+    <item id="page2" href="page2.xhtml" media-type="application/xhtml+xml" />
+    <item id="page3" href="page3.xhtml" media-type="application/xhtml+xml" />
+    <item id="page4" href="page4.xhtml" media-type="application/xhtml+xml" />
+  </manifest>
+  <spine page-progression-direction="rtl">
+    <itemref idref="page1" properties="page-spread-right" />
+    <itemref idref="page2" properties="page-spread-left" />
+    <itemref idref="page3" properties="page-spread-right" />
+    <itemref idref="page4" properties="page-spread-left" />
+  </spine>
 </package>

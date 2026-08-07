@@ -141,10 +141,13 @@ export function FoliateReader({ book, settings, customFontURL, onCenter, onContr
     const element = view.current;
     if (!element) return;
     await (action === "previous" ? element.prev() : element.next());
-    if (settings.animation !== "none") element.animate(settings.animation === "slide"
+    // Reflowable pagination owns its scroll animation. Fixed-layout replaces
+    // iframe spreads, so animating the host as well can expose compositor
+    // frames on Android WebView.
+    if (!book.fixed_layout && settings.animation !== "none") element.animate(settings.animation === "slide"
       ? [{ opacity: .35, transform: "translateX(6%)" }, { opacity: 1, transform: "translateX(0)" }]
       : [{ opacity: .15 }, { opacity: 1 }], { duration: 240, easing: "cubic-bezier(.22,.8,.25,1)" });
-  }, [settings.animation]);
+  }, [book.fixed_layout, settings.animation]);
 
   useEffect(() => {
     if (status !== "ready") return;
