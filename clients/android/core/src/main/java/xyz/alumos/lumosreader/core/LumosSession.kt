@@ -9,7 +9,7 @@ import uniffi.lumos_core.Bookshelf
 import uniffi.lumos_core.ShelvesState
 import uniffi.lumos_core.ReadingStats
 import uniffi.lumos_core.ServerFont
-import uniffi.lumos_core.LumosError
+import uniffi.lumos_core.LumosException
 import uniffi.lumos_core.ServerInfo
 import uniffi.lumos_core.SessionState
 import uniffi.lumos_core.createClient
@@ -94,11 +94,11 @@ object LumosSession {
     }
 
     fun friendlyError(error: Throwable): String = when (error) {
-        is LumosError.InvalidAddress -> "请输入完整的 HTTP 或 HTTPS 服务端根地址"
-        is LumosError.IncompatibleServer -> "服务端 API 版本不兼容，需要 API v4"
-        is LumosError.Unauthorized -> "登录已失效，请重新输入密码"
-        is LumosError.Network -> "无法连接服务器，请检查地址和网络"
-        is LumosError.Server -> "服务端返回错误"
+        is LumosException.InvalidAddress -> "请输入完整的 HTTP 或 HTTPS 服务端根地址"
+        is LumosException.IncompatibleServer -> "服务端 API 版本不兼容，需要 API v4"
+        is LumosException.Unauthorized -> "登录已失效，请重新输入密码"
+        is LumosException.Network -> "无法连接服务器，请检查地址和网络"
+        is LumosException.Server -> "服务端返回错误"
         else -> error.message ?: "发生未知错误"
     }
 }

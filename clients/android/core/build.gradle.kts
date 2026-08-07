@@ -13,6 +13,11 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     sourceSets["main"].java.srcDir(layout.buildDirectory.dir("generated/uniffi"))
+    lint {
+        // UniFFI's generated compatibility helper probes java.lang.ref.Cleaner at
+        // runtime and safely falls back on Android versions below API 33.
+        disable += "NewApi"
+    }
 }
 
 val rustDirectory = rootProject.layout.projectDirectory.dir("rust")
