@@ -63,7 +63,12 @@ if (import.meta.env.DEV) console.assert(comicWindowEnd(0, 100) === 21 && comicWi
 const objectWithGroupBy = Object as ObjectConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) => Record<PropertyKey, unknown[]> };
 const mapWithGroupBy = Map as MapConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => unknown) => Map<unknown, unknown[]> };
 
-function ensureGroupBy() {
+function ensureReaderCompatibility() {
+  if (!Array.prototype.at) Object.defineProperty(Array.prototype, "at", { configurable: true, writable: true, value<T>(this: T[], index: number) {
+    const offset = Math.trunc(Number(index)) || 0;
+    const position = offset < 0 ? this.length + offset : offset;
+    return this[position];
+  } });
   if (typeof objectWithGroupBy.groupBy !== "function") Object.defineProperty(Object, "groupBy", { configurable: true, writable: true, value(items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) {
     const groups: Record<PropertyKey, unknown[]> = Object.create(null);
     let index = 0;
@@ -82,8 +87,8 @@ function ensureGroupBy() {
   } });
 }
 
-ensureGroupBy();
-if (import.meta.env.DEV) console.assert(objectWithGroupBy.groupBy!([1, 2], (value) => Number(value) % 2)[0]?.[0] === 2, "groupBy 兼容层异常");
+ensureReaderCompatibility();
+if (import.meta.env.DEV) console.assert([1, 2].at(-1) === 2 && objectWithGroupBy.groupBy!([1, 2], (value) => Number(value) % 2)[0]?.[0] === 2, "阅读器兼容层异常");
 
 const defaultSettings: ReadingSettings = {
   template: "literary",
@@ -156,30 +161,19 @@ export function Reader({ book, collection, theme, onTheme, onBook, onClose }: { 
   const [progress, setProgress] = useState(book.progress);
   const [settings, setSettings] = useState(loadSettings);
   const [customTemplates, setCustomTemplates] = useState(loadTemplates);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [chromeOpen, setChromeOpen] = useState(false);
-  const [immersive, setImmersive] = useState(false);
+  const [panel, setPanel] = useState<"menu" | "settings">();
   const [controls, setControls] = useState<ReaderControls>();
-  const turns = useRef(0);
   const styleable = !book.is_comic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3" || book.format === "txt");
   const direction = settings.readingDirection === "auto" ? book.page_direction ?? "ltr" : settings.readingDirection;
   const customFontURL = settings.font === "custom" && settings.fontFile ? `/api/fonts/${encodeURIComponent(settings.fontFile)}` : "";
   const activeSettings = theme.mode === "eink" ? { ...settings, backgroundColor: "#ffffff", textColor: "#000000", animation: "none" as const } : settings;
   const connectControls = useCallback((value?: ReaderControls) => setControls(value), []);
-  const onTurn = useCallback(() => {
-    if (++turns.current < 2) return;
-    setImmersive(true);
-    setChromeOpen(false);
-    setSettingsOpen(false);
-  }, []);
+  const toggleMenu = useCallback(() => setPanel((current) => current === "menu" ? undefined : "menu"), []);
 
   useReadingTimer(book.id);
   useEffect(() => {
     setProgress(book.progress);
-    setChromeOpen(false);
-    setSettingsOpen(false);
-    setImmersive(false);
-    turns.current = 0;
+    setPanel(undefined);
   }, [book]);
   useEffect(() => { localStorage.setItem("lumos-reading-settings", JSON.stringify(settings)); }, [settings]);
   useEffect(() => { localStorage.setItem("lumos-reading-templates", JSON.stringify(customTemplates)); }, [customTemplates]);
@@ -195,21 +189,16 @@ export function Reader({ book, collection, theme, onTheme, onBook, onClose }: { 
     return () => window.removeEventListener("keydown", onKey);
   }, [controls]);
 
-  return <div className={`reader ${immersive ? "immersive" : ""}`} style={{ "--reader-bg": activeSettings.backgroundColor, "--reader-fg": activeSettings.textColor } as CSSProperties}>
-    <header className="reader-bar">
-      <button onClick={onClose}><ArrowLeft size={19} /><span>返回书库</span></button>
-      <div><strong>{book.title}</strong><small>{book.format.toUpperCase()}</small></div>
-      <div className="reader-actions"><span>{Math.round(progress * 100)}%</span><button aria-label="阅读设置" className={settingsOpen ? "active" : ""} onClick={() => { setChromeOpen(false); setSettingsOpen((open) => !open); }}><Settings2 size={18} /></button></div>
-    </header>
+  return <div className="reader" style={{ "--reader-bg": activeSettings.backgroundColor, "--reader-fg": activeSettings.textColor } as CSSProperties}>
     <div className="reader-body">
-      {book.format === "cbz" && <ComicReader book={book} settings={activeSettings} direction={direction} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
-      {book.format === "txt" && <TextReader book={book} settings={activeSettings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
-      {(book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={activeSettings} customFontURL={customFontURL} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
-      {book.format === "pdf" && <PDFReader book={book} settings={activeSettings} onCenter={() => setChromeOpen((open) => !open)} onTurn={onTurn} onControls={connectControls} onProgress={setProgress} />}
+      {book.format === "cbz" && <ComicReader book={book} settings={activeSettings} direction={direction} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
+      {book.format === "txt" && <TextReader book={book} settings={activeSettings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
+      {(book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={activeSettings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
+      {book.format === "pdf" && <PDFReader book={book} settings={activeSettings} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
     </div>
     <small className="reader-location">{controls?.location ?? `${Math.round(progress * 100)}%`}</small>
-    {chromeOpen && <ReaderChrome book={book} collection={collection} progress={progress} controls={controls} onBook={onBook} onSettings={() => { setChromeOpen(false); setSettingsOpen(true); }} onClose={() => setChromeOpen(false)} />}
-    {settingsOpen && <SettingsPanel
+    {panel === "menu" && <ReaderChrome book={book} collection={collection} progress={progress} controls={controls} onBook={onBook} onSettings={() => setPanel("settings")} onLibrary={onClose} />}
+    {panel === "settings" && <SettingsPanel
       settings={settings}
       templates={[...builtInTemplates, ...customTemplates]}
       theme={theme}
@@ -217,7 +206,7 @@ export function Reader({ book, collection, theme, onTheme, onBook, onClose }: { 
       styleable={styleable}
       comic={book.is_comic}
       onChange={setSettings}
-      onClose={() => setSettingsOpen(false)}
+      onClose={() => setPanel(undefined)}
       onDelete={(id) => setCustomTemplates((templates) => templates.filter((template) => template.id !== id))}
       onSave={(name) => {
         const id = `custom-${Date.now()}`;
@@ -229,11 +218,11 @@ export function Reader({ book, collection, theme, onTheme, onBook, onClose }: { 
   </div>;
 }
 
-function ReaderChrome({ book, collection, progress, controls, onBook, onSettings, onClose }: { book: Book; collection: Book[]; progress: number; controls?: ReaderControls; onBook: (book: Book) => void; onSettings: () => void; onClose: () => void }) {
+function ReaderChrome({ book, collection, progress, controls, onBook, onSettings, onLibrary }: { book: Book; collection: Book[]; progress: number; controls?: ReaderControls; onBook: (book: Book) => void; onSettings: () => void; onLibrary: () => void }) {
   const [query, setQuery] = useState("");
   const [descending, setDescending] = useState(false);
   const [page, setPage] = useState(0);
-  const [chaptersOpen, setChaptersOpen] = useState(true);
+  const [chaptersOpen, setChaptersOpen] = useState(false);
   const volumes = collection.length > 1 ? [...collection].sort((a, b) => a.file_name.localeCompare(b.file_name, undefined, { numeric: true })) : [];
   const chapters = controls?.chapters ?? [];
   const normalized = query.trim().toLocaleLowerCase();
@@ -253,7 +242,7 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onSettings
   };
   return <div className="reader-chrome">
     {chaptersOpen && (volumes.length > 0 || chapters.length > 0) && <aside className="chapter-panel">
-      <header><ListTree size={17} /><strong>章节与卷册</strong><button aria-label="收起" onClick={onClose}><X size={16} /></button></header>
+      <header><ListTree size={17} /><strong>章节与卷册</strong><button aria-label="收起" onClick={() => setChaptersOpen(false)}><X size={16} /></button></header>
       <div className="chapter-tools"><input type="search" aria-label="搜索章节或卷册" value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} placeholder="搜索章节或卷册" /><button aria-label="定位当前章节" disabled={!controls?.currentChapter} onClick={locateCurrent}><LocateFixed size={13} />定位</button><button aria-label="切换排列顺序" onClick={() => { setDescending((value) => !value); setPage(0); }}>{descending ? "倒序" : "顺序"}</button></div>
       {shown.some((item) => item.kind === "volume") && <section className="chapter-list"><small>卷册</small>{shown.map((item) => item.kind === "volume" && <button key={item.book.id} className={item.book.id === book.id ? "active" : ""} onClick={() => onBook(item.book)}><span>{item.number}</span>{item.label}</button>)}</section>}
       {shown.some((item) => item.kind === "chapter") && <section className="chapter-list"><small>目录</small>{shown.map((item) => item.kind === "chapter" && <button key={`${item.chapter.href}-${item.number}`} className={item.chapter.href === controls?.currentChapter ? "active" : ""} style={{ "--level": item.chapter.level } as CSSProperties} onClick={() => controls?.goToChapter?.(item.chapter.href)}><span>{item.number}</span>{item.label}</button>)}</section>}
@@ -262,6 +251,7 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onSettings
     </aside>}
     <div className="floating-reader-head"><strong>{book.title}</strong><small>{book.format.toUpperCase()}</small></div>
     <div className="floating-reader-bar">
+      <button className="reader-menu-button" aria-label="返回书库" onClick={onLibrary}><ArrowLeft size={17} /><span>书库</span></button>
       <button aria-label="上一页" onClick={controls?.previous}><ChevronLeft /></button>
       <div><span>{Math.round(progress * 100)}%</span><input aria-label="阅读进度" type="range" min={0} max={1} step={0.001} value={progress} disabled={!controls?.seek} onChange={(event) => controls?.seek?.(Number(event.target.value))} /></div>
       <button aria-label="下一页" onClick={controls?.next}><ChevronRight /></button>
@@ -271,12 +261,11 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onSettings
   </div>;
 }
 
-function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onControls, onProgress }: {
+function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onProgress }: {
   book: Book;
   settings: ReadingSettings;
   customFontURL: string;
   onCenter: () => void;
-  onTurn: () => void;
   onControls: (controls?: ReaderControls) => void;
   onProgress: (value: number) => void;
 }) {
@@ -391,11 +380,10 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onTurn, onContr
     const element = view.current;
     if (!element) return;
     await (action === "previous" ? element.prev() : element.next());
-    onTurn();
     if (settings.animation !== "none") element.animate(settings.animation === "slide"
       ? [{ opacity: .35, transform: "translateX(6%)" }, { opacity: 1, transform: "translateX(0)" }]
       : [{ opacity: .15 }, { opacity: 1 }], { duration: 240, easing: "cubic-bezier(.22,.8,.25,1)" });
-  }, [onTurn, settings.animation]);
+  }, [settings.animation]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -441,12 +429,11 @@ function bookStyles(settings: ReadingSettings, customFontURL: string) {
     a { color: ${settings.textColor} !important; }`;
 }
 
-function TextReader({ book, settings, customFontURL, onCenter, onTurn, onControls, onProgress }: {
+function TextReader({ book, settings, customFontURL, onCenter, onControls, onProgress }: {
   book: Book;
   settings: ReadingSettings;
   customFontURL: string;
   onCenter: () => void;
-  onTurn: () => void;
   onControls: (controls?: ReaderControls) => void;
   onProgress: (value: number) => void;
 }) {
@@ -475,7 +462,6 @@ function TextReader({ book, settings, customFontURL, onCenter, onTurn, onControl
       const element = article.current;
       if (!element) return;
       element.scrollBy({ top: pages * element.clientHeight * 0.88, behavior: settings.animation === "none" ? "auto" : "smooth" });
-      onTurn();
     };
     onControls({
       previous: () => scroll(-1),
@@ -486,7 +472,7 @@ function TextReader({ book, settings, customFontURL, onCenter, onTurn, onControl
       },
     });
     return () => onControls(undefined);
-  }, [onControls, onTurn, settings.animation]);
+  }, [onControls, settings.animation]);
   const style = {
     "--reader-bg": settings.backgroundColor,
     "--reader-fg": settings.textColor,
@@ -502,7 +488,7 @@ function TextReader({ book, settings, customFontURL, onCenter, onTurn, onControl
   </>;
 }
 
-function ComicReader({ book, settings, direction, onCenter, onTurn, onControls, onProgress }: { book: Book; settings: ReadingSettings; direction: "ltr" | "rtl"; onCenter: () => void; onTurn: () => void; onControls: (controls?: ReaderControls) => void; onProgress: (value: number) => void }) {
+function ComicReader({ book, settings, direction, onCenter, onControls, onProgress }: { book: Book; settings: ReadingSettings; direction: "ltr" | "rtl"; onCenter: () => void; onControls: (controls?: ReaderControls) => void; onProgress: (value: number) => void }) {
   const [pages, setPages] = useState<ComicPage[]>([]);
   const [page, setPage] = useState(0);
   useEffect(() => {
@@ -512,9 +498,8 @@ function ComicReader({ book, settings, direction, onCenter, onTurn, onControls, 
     });
   }, [book]);
   const turn = useCallback((delta: number) => {
-    onTurn();
     setPage((current) => Math.max(0, Math.min(pages.length - 1, current + delta * settings.columns)));
-  }, [onTurn, pages.length, settings.columns]);
+  }, [pages.length, settings.columns]);
   useEffect(() => {
     if (!pages.length) return;
     const position = pages.length === 1 ? 1 : page / (pages.length - 1);
@@ -538,7 +523,7 @@ function ComicReader({ book, settings, direction, onCenter, onTurn, onControls, 
   </div>;
 }
 
-function PDFReader({ book, settings, onCenter, onTurn, onControls, onProgress }: { book: Book; settings: ReadingSettings; onCenter: () => void; onTurn: () => void; onControls: (controls?: ReaderControls) => void; onProgress: (value: number) => void }) {
+function PDFReader({ book, settings, onCenter, onControls, onProgress }: { book: Book; settings: ReadingSettings; onCenter: () => void; onControls: (controls?: ReaderControls) => void; onProgress: (value: number) => void }) {
   const stage = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const documentRef = useRef<{ getPage: (page: number) => Promise<any> } | undefined>(undefined);
@@ -547,9 +532,8 @@ function PDFReader({ book, settings, onCenter, onTurn, onControls, onProgress }:
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(0);
   const turn = useCallback((delta: number) => {
-    onTurn();
     setPage((current) => Math.max(0, Math.min(count - 1, current + delta)));
-  }, [count, onTurn]);
+  }, [count]);
 
   useEffect(() => {
     let active = true;

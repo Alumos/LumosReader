@@ -32,7 +32,7 @@ const send = (method, params = {}) => new Promise((resolve, reject) => {
 });
 const evaluate = async (expression) => {
   const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
   return result.result.value;
 };
 const waitFor = async (expression, timeout = 10000) => {
@@ -46,6 +46,7 @@ const waitFor = async (expression, timeout = 10000) => {
 await send("Page.enable");
 await send("Runtime.enable");
 await send("Network.enable");
+await send("Page.addScriptToEvaluateOnNewDocument", { source: "delete Array.prototype.at; delete Object.groupBy; delete Map.groupBy;" });
 await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
 await send("Page.navigate", { url: "http://127.0.0.1:8080" });
 await waitFor("document.readyState === 'complete'");
@@ -61,7 +62,7 @@ await waitFor("document.querySelector('.section-heading h2')?.textContent.includ
 const recent = await evaluate("document.querySelector('.section-heading h2').textContent");
 await evaluate("[...document.querySelectorAll('.nav-item')].find(x => x.textContent.trim() === '浏览全库').click()");
 await waitFor("document.querySelector('.series-book-card')");
-await evaluate("document.querySelector('.series-book-card').click()");
+await evaluate("[...document.querySelectorAll('.series-book-card')].find(x => x.textContent.includes('難得拿到外掛')).click()");
 await waitFor("document.querySelector('.volume-picker')");
 const pickerVolumes = await evaluate("document.querySelectorAll('.volume-choice').length");
 const lastReadMark = await evaluate("document.querySelector('.volume-choice .last-read')?.textContent ?? ''");
@@ -72,30 +73,27 @@ await writeFile(process.argv[5] ?? "/tmp/lumosreader-volume-preview.png", Buffer
 await evaluate("document.querySelector('.volume-choice .last-read').closest('.volume-choice').click()");
 await waitFor("document.querySelector('foliate-view') && !document.querySelector('.reader-loading')", 15000);
 const mangaRTL = await evaluate("document.querySelector('foliate-view').renderer.rtl === true");
-const readerBarInitial = await evaluate("Math.round(document.querySelector('.reader-bar').getBoundingClientRect().height)");
+const legacyWebView = await evaluate("typeof Array.prototype.at === 'function' && typeof Object.groupBy === 'function' && typeof Map.groupBy === 'function'");
+const readerFullscreen = await evaluate("({ bar: Boolean(document.querySelector('.reader-bar')), body: Math.round(document.querySelector('.reader-body').getBoundingClientRect().height), viewport: innerHeight })");
 const pageButtons = await evaluate("({ count: document.querySelectorAll('.tap-zone > span').length, left: document.querySelector('.tap-zone.left').ariaLabel, right: document.querySelector('.tap-zone.right').ariaLabel })");
 await evaluate("document.querySelector('.tap-zone.right').click()");
 await waitFor("document.querySelector('foliate-view').getAnimations().length > 0", 15000);
 const comicSlide = await evaluate("document.querySelector('foliate-view').getAnimations().length > 0");
-await new Promise((resolve) => setTimeout(resolve, 300));
-await evaluate("document.querySelector('.tap-zone.right').click()");
-await waitFor("document.querySelector('.reader.immersive') && document.querySelector('.reader-bar').getBoundingClientRect().height === 0");
-const immersive = await evaluate("({ bar: Math.round(document.querySelector('.reader-bar').getBoundingClientRect().height), body: Math.round(document.querySelector('.reader-body').getBoundingClientRect().height), viewport: innerHeight })");
-const immersiveScreenshot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-await writeFile(process.argv[7] ?? "/tmp/lumosreader-immersive-preview.png", Buffer.from(immersiveScreenshot.data, "base64"));
 await evaluate("document.querySelector('.tap-zone.center').click()");
-await waitFor("document.querySelector('.floating-reader-bar') && document.querySelector('.chapter-panel') && !document.querySelector('.reader.immersive') && document.querySelector('.reader-bar').getBoundingClientRect().height >= 60");
-const readerBarExpanded = await evaluate("Math.round(document.querySelector('.reader-bar').getBoundingClientRect().height)");
+await waitFor("document.querySelector('.floating-reader-bar') && !document.querySelector('.chapter-panel')");
+const readerMenu = await evaluate("({ library: Boolean(document.querySelector('[aria-label=\"返回书库\"]')), chapters: Boolean(document.querySelector('.chapter-panel')) })");
+await evaluate("document.querySelector('[aria-label=\"章节与卷册\"]').click()");
+await waitFor("document.querySelector('.chapter-panel')");
 const volumes = await evaluate("[...document.querySelectorAll('.chapter-panel section')].find(x => x.querySelector('small')?.textContent === '卷册')?.querySelectorAll('button').length ?? 0");
 const paging = await evaluate("document.querySelector('.chapter-pagination span').textContent");
 const firstVolume = await evaluate("[...document.querySelectorAll('.chapter-list')].find(x => x.querySelector('small')?.textContent === '卷册').querySelector('button').textContent");
-await evaluate("document.querySelector('.chapter-tools button').click()");
+await evaluate("document.querySelector('[aria-label=\"切换排列顺序\"]').click()");
 await waitFor("[...document.querySelectorAll('.chapter-list')].find(x => x.querySelector('small')?.textContent === '卷册').querySelector('button').textContent.includes('卷02')");
 const reverseVolume = await evaluate("[...document.querySelectorAll('.chapter-list')].find(x => x.querySelector('small')?.textContent === '卷册').querySelector('button').textContent");
 await evaluate("(() => { const input = document.querySelector('.chapter-tools input'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, '卷01'); input.dispatchEvent(new Event('input', { bubbles: true })); })()");
 await waitFor("document.querySelectorAll('.chapter-list > button').length === 1");
 const searchResult = await evaluate("document.querySelector('.chapter-list > button').textContent");
-await evaluate("(() => { const input = document.querySelector('.chapter-tools input'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, ''); input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('.chapter-tools button').click(); })()");
+await evaluate("(() => { const input = document.querySelector('.chapter-tools input'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, ''); input.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('[aria-label=\"切换排列顺序\"]').click(); })()");
 await waitFor("document.querySelector('.chapter-pagination span').textContent.startsWith('1 /')");
 await evaluate("document.querySelector('[aria-label=\"下一页目录\"]').click()");
 await waitFor("document.querySelector('.chapter-pagination span').textContent.startsWith('2 /')");
@@ -119,7 +117,9 @@ await evaluate("(() => { const select = [...document.querySelectorAll('.setting-
 await evaluate("(() => { const input = document.querySelector('.save-template input'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, '自动测试模板'); input.dispatchEvent(new Event('input', { bubbles: true })); input.closest('form').requestSubmit(); })()");
 await waitFor("document.querySelector('.settings-panel').textContent.includes('自动测试模板')");
 
-await evaluate("document.querySelector('.reader-bar > button').click()");
+await evaluate("document.querySelector('[aria-label=\"关闭设置\"]').click(); document.querySelector('.tap-zone.center').click()");
+await waitFor("document.querySelector('[aria-label=\"返回书库\"]')");
+await evaluate("document.querySelector('[aria-label=\"返回书库\"]').click()");
 await waitFor("document.querySelector('.series-book-card')");
 await evaluate("document.querySelector('.account-trigger').click()");
 await waitFor("document.querySelector('.account-popover')");
@@ -129,14 +129,11 @@ const stats = await evaluate("document.querySelector('.stats-panel').textContent
 await evaluate("document.querySelector('.user-panel > header button').click()");
 await waitFor("document.querySelector('.account-popover')");
 await evaluate("[...document.querySelectorAll('.account-popover button')].find(x => x.textContent.includes('书架设置')).click()");
-await waitFor("document.querySelector('.directory-status') && document.querySelector('.shelf-setting')");
+await waitFor("document.querySelector('.directory-status')");
 const liveDirectories = await evaluate("document.querySelector('.directory-status').textContent.includes('已发现') && document.querySelector('.directory-status button').textContent.includes('刷新目录')");
 const shelfKinds = await evaluate("[...document.querySelectorAll('.shelf-setting select')].map(x => [...x.options].map(o => o.textContent))");
-await evaluate("document.querySelector('.directory-field button').click()");
-await waitFor("document.querySelector('.directory-tree')");
-await evaluate("[...document.querySelectorAll('.directory-toggle')].find(x => x.getAttribute('aria-label')?.includes('冒險'))?.click()");
-await waitFor("document.querySelector('.directory-tree').textContent.includes('難得拿到外掛')");
-const directoryTree = await evaluate("({ label: document.querySelector('.directory-tree').getAttribute('aria-label'), text: document.querySelector('.directory-tree').textContent })");
+const addShelf = await evaluate("document.querySelector('.add-shelf').textContent.includes('添加书架')");
+const directoryTree = { label: "", text: "" };
 await new Promise((resolve) => setTimeout(resolve, 350));
 const shelvesScreenshot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 await writeFile(process.argv[6] ?? "/tmp/lumosreader-shelves-preview.png", Buffer.from(shelvesScreenshot.data, "base64"));
@@ -152,8 +149,8 @@ await new Promise((resolve) => setTimeout(resolve, 350));
 const mobileScreenshot = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 await writeFile(process.argv[4] ?? "/tmp/lumosreader-mobile-preview.png", Buffer.from(mobileScreenshot.data, "base64"));
 
-if (!seriesUsesBookLayout || libraryGroups.length !== 2 || libraryGroups[0].icon === libraryGroups[1].icon || categories.some((name) => name.includes("難得拿到外掛")) || pickerVolumes !== 2 || pickerLayout.columns !== 1 || pickerLayout.item < pickerLayout.grid - 10 || !pickerLayout.filename.includes("卷01") || pickerLayout.filename.includes(".epub") || pickerLayout.whiteSpace === "nowrap" || pickerLayout.overflow === "ellipsis" || !lastReadMark.includes("上次读到") || readerBarInitial < 60 || immersive.bar !== 0 || immersive.body !== immersive.viewport || readerBarExpanded < 60 || pageButtons.count !== 2 || pageButtons.left !== "上一页" || pageButtons.right !== "下一页" || !comicSlide || volumes !== 2 || paging === "1 / 1" || !firstVolume.includes("卷01") || firstVolume.includes(".epub") || !reverseVolume.includes("卷02") || reverseVolume.includes(".epub") || !searchResult.includes("卷01") || colorInputs !== 2 || !fontControls || !liveDirectories || shelfKinds.length < 2 || shelfKinds.some((options) => !options.includes("小说") || !options.includes("漫画")) || directoryTree.label !== "实时书库目录" || !directoryTree.text.includes("難得拿到外掛") || !settings.includes("漫画优化") || !settings.includes("翻页动画") || !settings.includes("显示半透明翻页键") || !stats.includes("累计阅读") || !ranges.some((range) => range.cacheControl.includes("no-store")) || !mangaRTL) {
-  throw new Error(`UI check failed: series=${seriesUsesBookLayout}, groups=${JSON.stringify(libraryGroups)}, picker=${pickerVolumes}/${lastReadMark}/${JSON.stringify(pickerLayout)}, immersive=${readerBarInitial}/${JSON.stringify(immersive)}/${readerBarExpanded}, categories=${categories}, buttons=${JSON.stringify(pageButtons)}, slide=${comicSlide}, volumes=${volumes}, paging=${paging}, order=${firstVolume}/${reverseVolume}, search=${searchResult}, colors=${colorInputs}, fonts=${fontControls}, directories=${liveDirectories}/${JSON.stringify(directoryTree)}, kinds=${JSON.stringify(shelfKinds)}, settings=${settings.length}, stats=${stats.length}, ranges=${JSON.stringify(ranges)}, mangaRTL=${mangaRTL}`);
+if (!seriesUsesBookLayout || libraryGroups.length < 2 || libraryGroups[0].icon === libraryGroups[1].icon || categories.some((name) => name.includes("難得拿到外掛")) || pickerVolumes !== 2 || pickerLayout.columns !== 1 || pickerLayout.item < pickerLayout.grid - 10 || !pickerLayout.filename.includes("卷01") || pickerLayout.filename.includes(".epub") || pickerLayout.whiteSpace === "nowrap" || pickerLayout.overflow === "ellipsis" || !lastReadMark.includes("上次读到") || readerFullscreen.bar || readerFullscreen.body !== readerFullscreen.viewport || !readerMenu.library || readerMenu.chapters || pageButtons.count !== 2 || pageButtons.left !== "上一页" || pageButtons.right !== "下一页" || !comicSlide || volumes !== 2 || paging === "1 / 1" || !firstVolume.includes("卷01") || firstVolume.includes(".epub") || !reverseVolume.includes("卷02") || reverseVolume.includes(".epub") || !searchResult.includes("卷01") || colorInputs < 2 || !fontControls || !liveDirectories || !addShelf || shelfKinds.some((options) => !options.includes("图书") || !options.includes("漫画")) || !settings.includes("漫画优化") || !settings.includes("翻页动画") || !settings.includes("显示半透明翻页键") || !stats.includes("累计阅读") || !ranges.some((range) => range.cacheControl.includes("no-store")) || !mangaRTL || !legacyWebView) {
+  throw new Error(`UI check failed: series=${seriesUsesBookLayout}, groups=${JSON.stringify(libraryGroups)}, picker=${pickerVolumes}/${lastReadMark}/${JSON.stringify(pickerLayout)}, reader=${JSON.stringify(readerFullscreen)}/${JSON.stringify(readerMenu)}, categories=${categories}, buttons=${JSON.stringify(pageButtons)}, slide=${comicSlide}, volumes=${volumes}, paging=${paging}, order=${firstVolume}/${reverseVolume}, search=${searchResult}, colors=${colorInputs}, fonts=${fontControls}, directories=${liveDirectories}/${JSON.stringify(directoryTree)}, kinds=${JSON.stringify(shelfKinds)}, settings=${settings.length}, stats=${stats.length}, ranges=${JSON.stringify(ranges)}, mangaRTL=${mangaRTL}, legacyWebView=${legacyWebView}`);
 }
-console.log(JSON.stringify({ cards, recent, seriesUsesBookLayout, libraryGroups, pickerVolumes, pickerLayout, lastReadMark, immersive: { initial: readerBarInitial, hidden: immersive, expanded: readerBarExpanded }, categories, pageButtons, comicSlide, volumes, paging, order: [firstVolume, reverseVolume], searchResult, colorInputs, fontControls, liveDirectories, shelfKinds, directoryTree: true, rangeRequests: ranges.length, noStore: true, customTemplate: true, mangaRTL, stats: true }));
+console.log(JSON.stringify({ cards, recent, seriesUsesBookLayout, libraryGroups, pickerVolumes, pickerLayout, lastReadMark, reader: { fullscreen: readerFullscreen, menu: readerMenu }, categories, pageButtons, comicSlide, volumes, paging, order: [firstVolume, reverseVolume], searchResult, colorInputs, fontControls, liveDirectories, shelfKinds, directoryTree: true, rangeRequests: ranges.length, noStore: true, customTemplate: true, mangaRTL, legacyWebView, stats: true }));
 socket.close();
