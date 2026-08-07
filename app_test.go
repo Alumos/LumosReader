@@ -208,6 +208,47 @@ func TestComicEPUBMetadata(t *testing.T) {
 	}
 }
 
+func TestComicEPUBPages(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "comic.epub")
+	file, err := os.Create(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	entries := map[string]string{
+		"META-INF/container.xml": `<container><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
+		"OEBPS/book.opf":         `<package><manifest><item id="p2" href="pages/2.xhtml" media-type="application/xhtml+xml"/><item id="p1" href="pages/1.xhtml" media-type="application/xhtml+xml"/><item id="i1" href="images/1.jpg" media-type="image/jpeg"/><item id="i2" href="images/2.jpg" media-type="image/jpeg"/></manifest><spine><itemref idref="p1"/><itemref idref="p2"/></spine></package>`,
+		"OEBPS/pages/1.xhtml":    `<html><body><img src="../images/1.jpg"/></body></html>`,
+		"OEBPS/pages/2.xhtml":    `<html xmlns:xlink="http://www.w3.org/1999/xlink"><body><svg><image xlink:href="../images/2.jpg"/></svg></body></html>`,
+		"OEBPS/images/1.jpg":     "one",
+		"OEBPS/images/2.jpg":     "two",
+	}
+	for name, content := range entries {
+		writer, createErr := archive.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := writer.Write([]byte(content)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.OpenReader(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	pages, err := epubComicFiles(reader.File)
+	if err != nil || len(pages) != 2 || pages[0].Name != "OEBPS/images/1.jpg" || pages[1].Name != "OEBPS/images/2.jpg" {
+		t.Fatalf("unexpected pages: %v err=%v", pages, err)
+	}
+}
+
 func TestContentRangeAndSecurityHeaders(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "book.epub"), []byte("0123456789"), 0o600); err != nil {
@@ -224,7 +265,7 @@ func TestContentRangeAndSecurityHeaders(t *testing.T) {
 	if response.Code != http.StatusPartialContent || response.Body.String() != "2345" {
 		t.Fatalf("got status %d body %q", response.Code, response.Body.String())
 	}
-	if csp := response.Header().Get("Content-Security-Policy"); response.Header().Get("Content-Range") != "bytes 2-5/10" || !strings.Contains(csp, "frame-ancestors 'self'") {
+	if csp := response.Header().Get("Content-Security-Policy"); response.Header().Get("Content-Range") != "bytes 2-5/10" || !strings.Contains(csp, "connect-src 'self' blob:") || !strings.Contains(csp, "frame-ancestors 'self'") {
 		t.Fatalf("missing range or security headers: %v", response.Header())
 	}
 	if response.Header().Get("Cache-Control") != "private, no-store" {
