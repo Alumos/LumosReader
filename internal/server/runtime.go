@@ -1,8 +1,7 @@
-package main
+package server
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -14,10 +13,7 @@ import (
 	"time"
 )
 
-const version = "0.4.0"
-
-//go:embed web/dist
-var webAssets embed.FS
+const version = "0.5.0"
 
 type config struct {
 	addr         string
@@ -28,23 +24,12 @@ type config struct {
 	scanInterval time.Duration
 }
 
-func main() {
-	if err := run(); err != nil {
-		slog.Error("server stopped", "error", err)
-		os.Exit(1)
-	}
-}
-
-func run() error {
+func Run(web fs.FS) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
 
-	web, err := fs.Sub(webAssets, "web/dist")
-	if err != nil {
-		return err
-	}
 	store, err := openStore(filepath.Join(cfg.dataDir, "lumosreader.db"))
 	if err != nil {
 		return err

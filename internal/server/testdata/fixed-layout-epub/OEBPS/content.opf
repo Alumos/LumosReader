@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="id" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="id">lumos-fixed-layout-test</dc:identifier>
+    <dc:title>固定版式测试</dc:title>
+    <meta property="rendition:layout">pre-paginated</meta>
+  </metadata>
+  <manifest><item id="page" href="page.xhtml" media-type="application/xhtml+xml" /></manifest>
+  <spine page-progression-direction="rtl"><itemref idref="page" /></spine>
+</package>

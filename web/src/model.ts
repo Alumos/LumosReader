@@ -17,6 +17,7 @@ export type Book = {
   category?: string;
   series?: string;
   is_comic: boolean;
+  fixed_layout?: boolean;
   page_direction?: "ltr" | "rtl";
   size: number;
   modified: string;

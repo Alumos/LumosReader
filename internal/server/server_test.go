@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"archive/zip"
@@ -99,7 +99,7 @@ func TestBookshelfClassificationAndReadingStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	book := library.List()[0]
-	if book.FileName != "第01卷.cbz" || book.Shelf != "漫画馆" || book.ShelfKind != "comic" || book.Category != "爱情" || book.Series != "躲在超市后门抽烟的两人" || !book.IsComic || book.PageDirection != "rtl" {
+	if book.FileName != "第01卷.cbz" || book.Shelf != "漫画馆" || book.ShelfKind != "comic" || book.Category != "爱情" || book.Series != "躲在超市后门抽烟的两人" || book.PageDirection != "rtl" {
 		t.Fatalf("unexpected classification: %#v", book)
 	}
 	store, err := openStore(filepath.Join(t.TempDir(), "test.db"))
@@ -161,6 +161,28 @@ func TestEPUBMetadata(t *testing.T) {
 	}
 }
 
+func TestFixedLayoutEPUBMetadata(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "fixed.epub")
+	file, err := os.Create(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	if err := archive.AddFS(os.DirFS("testdata/fixed-layout-epub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := readEPUBMetadata(filename)
+	if err != nil || !metadata.FixedLayout || metadata.Title != "固定版式测试" || metadata.Direction != "rtl" {
+		t.Fatalf("unexpected fixed-layout metadata: %#v err=%v", metadata, err)
+	}
+}
+
 func TestComicEPUBMetadata(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "冒險", "系列")
@@ -193,7 +215,7 @@ func TestComicEPUBMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata, err := readEPUBMetadata(filename)
-	if err != nil || !metadata.Comic || metadata.Direction != "rtl" || metadata.Series != "系列" {
+	if err != nil || !metadata.FixedLayout || metadata.Direction != "rtl" || metadata.Series != "系列" {
 		t.Fatalf("unexpected comic metadata: %#v err=%v", metadata, err)
 	}
 	library := newLibrary(root)
@@ -203,49 +225,26 @@ func TestComicEPUBMetadata(t *testing.T) {
 		}
 	}
 	book := library.List()[0]
-	if book.Category != "" || book.Series != "系列" || !book.IsComic || book.PageDirection != "rtl" {
+	if book.Category != "" || book.Series != "系列" || book.ShelfKind != "comic" || !book.FixedLayout || book.PageDirection != "rtl" {
 		t.Fatalf("series folder leaked into navigation: %#v", book)
 	}
 }
 
-func TestComicEPUBPages(t *testing.T) {
-	filename := filepath.Join(t.TempDir(), "comic.epub")
-	file, err := os.Create(filename)
-	if err != nil {
+func TestEPUBNeverUsesImagePageAPI(t *testing.T) {
+	root := t.TempDir()
+	filename := filepath.Join(root, "comic.epub")
+	if err := os.WriteFile(filename, []byte("not needed for route validation"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	archive := zip.NewWriter(file)
-	entries := map[string]string{
-		"META-INF/container.xml": `<container><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`,
-		"OEBPS/book.opf":         `<package><manifest><item id="p2" href="pages/2.xhtml" media-type="application/xhtml+xml"/><item id="p1" href="pages/1.xhtml" media-type="application/xhtml+xml"/><item id="i1" href="images/1.jpg" media-type="image/jpeg"/><item id="i2" href="images/2.jpg" media-type="image/jpeg"/></manifest><spine><itemref idref="p1"/><itemref idref="p2"/></spine></package>`,
-		"OEBPS/pages/1.xhtml":    `<html><body><img src="../images/1.jpg"/></body></html>`,
-		"OEBPS/pages/2.xhtml":    `<html xmlns:xlink="http://www.w3.org/1999/xlink"><body><svg><image xlink:href="../images/2.jpg"/></svg></body></html>`,
-		"OEBPS/images/1.jpg":     "one",
-		"OEBPS/images/2.jpg":     "two",
-	}
-	for name, content := range entries {
-		writer, createErr := archive.Create(name)
-		if createErr != nil {
-			t.Fatal(createErr)
-		}
-		if _, writeErr := writer.Write([]byte(content)); writeErr != nil {
-			t.Fatal(writeErr)
-		}
-	}
-	if err := archive.Close(); err != nil {
+	library := newLibrary(root)
+	if _, err := library.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reader, err := zip.OpenReader(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	pages, err := epubComicFiles(reader.File)
-	if err != nil || len(pages) != 2 || pages[0].Name != "OEBPS/images/1.jpg" || pages[1].Name != "OEBPS/images/2.jpg" {
-		t.Fatalf("unexpected pages: %v err=%v", pages, err)
+	request := httptest.NewRequest(http.MethodGet, "/api/books/"+library.List()[0].ID+"/pages", nil)
+	response := httptest.NewRecorder()
+	(&app{library: library}).routes().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("EPUB must be rendered by foliate-js, pages endpoint returned %d", response.Code)
 	}
 }
 

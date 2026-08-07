@@ -1,77 +1,67 @@
-# 微光阅 · Lumos Reader
+# 微光阅 Lumos Reader
 
-把 NAS 里的 EPUB、MOBI、AZW3、PDF、CBZ 和 TXT 作为只读书库，通过 Web 在线阅读。服务端是一个 Go 进程，Web 构建产物内嵌其中，SQLite 只保存进度、阅读时长和书架配置。
+把 NAS 中的 EPUB、MOBI、AZW3、PDF、CBZ 和 TXT 作为只读书库，通过浏览器在线阅读。服务端是单个 Go 进程，内嵌 React 前端；SQLite 仅保存书架、进度与阅读统计。
 
-![微光阅 Web 书架](docs/preview.png)
+![微光阅书库](docs/preview.png)
 
-窄屏布局见 [docs/preview-mobile.png](docs/preview-mobile.png)。
+## 特性
 
-![微光阅阅读器](docs/reader-preview.png)
+- EPUB、MOBI、AZW3 使用 foliate-js 原生排版；固定版式 EPUB 保留原始 XHTML、SVG、CSS 和书内字体，不转换成图片。
+- CBZ/ZIP 使用轻量图片阅读器，扫描时建立页索引，阅读时只解压当前页并预载少量后续页面。
+- PDF.js 使用 64 KB Range 分块读取；TXT 提供可定制的滚动排版。
+- 内容请求支持 HTTP Range，不会在服务端或浏览器持久存储完整书籍副本。
+- 阅读进度、章节定位、阅读时长、书架配置和服务端字体统一由同一服务提供。
+- 莫奈柔彩与 E-INK 界面主题；阅读器有独立排版模板、字体、单双页和阅读方向设置。
 
-目前支持：
+## 项目结构
 
-- EPUB 元数据与内嵌封面识别，CBZ 首图封面，以及 PDF、MOBI、AZW3 的浏览器端懒加载封面。
-- EPUB、MOBI、AZW3 分页阅读；PDF 与 CBZ 在线分页；TXT 基础排版。阅读区默认全屏，中部点击可打开返回书库、书名、章节、进度和翻页控制。
-- 网文、文学、墨水屏、漫画和夜间模板，以及用户自定义模板、字体文件、字号、行距、段距、字距、页面颜色、单双页、翻页效果和可隐藏翻页键。
-- 字体上传到服务端字体目录并实时列出，Web 和 Android 客户端可按需下载同一字体。
-- 侧栏按漫画、图书分组，再依据挂载目录折叠书架和二级分类；书架设置可指定内容类型，并实时展开完整 NAS 目录树。
-- 固定版式 EPUB/CBZ 自动识别为漫画，并读取 EPUB 原生左右翻页方向；阅读方向也可手动覆盖。
-- 漫画保持后续 6 页的内存预加载窗口；方向键及浏览器允许上报时的音量键均可翻页。
-- 阅读进度、“最近阅读”和按日阅读时长统计。书籍内容支持 HTTP Range，请求多少读多少，不会先把整本书下载到缓存。
+```text
+cmd/lumosreader/       可执行程序入口
+internal/server/       书库扫描、EPUB 元数据、HTTP API、SQLite
+web/                   React 前端与内嵌资源入口
+web/src/reader/        各格式阅读器、设置和兼容层
+scripts/               浏览器端到端检查
+docs/                  界面预览
+```
 
-## 本地预览
+测试夹具位于 `internal/server/testdata`。`testdata` 是 Go 的标准测试目录约定，不会被打包为普通源码依赖。
+
+## 本地开发
+
+需要 Go 1.26 和 Node.js 26：
 
 ```bash
 cd web
-npm install
+npm ci
 npm run build
 cd ..
 mkdir -p library
-go run .
+go run ./cmd/lumosreader
 ```
 
-把测试书放入 `library` 后打开 <http://127.0.0.1:8080>。本地预览默认未设置密码。
+将测试书籍放入 `library`，然后访问 <http://127.0.0.1:8080>。默认不设置密码。
 
 ## Docker Compose
 
 ```bash
 cp .env.example .env
-# 编辑 .env 中的密码、漫画/图书路径和 NAS 用户 UID/GID
-mkdir -p data fonts
+# 设置书库目录和 ADMIN_PASSWORD
 docker compose pull
 docker compose up -d
 ```
 
-仓库中的 [compose.yaml](compose.yaml) 就是可直接使用的双目录 NAS 示例：
+仓库中的 `compose.yaml` 提供漫画和图书两个只读挂载示例。服务默认只监听宿主机 `127.0.0.1:8080`，建议通过 Caddy、Nginx 或 NAS 反向代理提供 HTTPS。
 
-```dotenv
-COMICS_DIR=/volume5/漫画
-BOOKS_DIR=/volume4/小说
-STATE_DIR=./data
-FONT_DIR_HOST=./fonts
-ADMIN_PASSWORD=请换成强密码
-PUID=1000
-PGID=1000
-```
+字体目录通过 `FONTS_DIR=/fonts` 与 `FONT_DIR_HOST` 挂载解耦。例如设置 `FONT_DIR_HOST=/volume7/字体` 后，Web 上传的 TTF、OTF、WOFF 和 WOFF2 会直接写入该 NAS 目录；字体库每次打开时实时读取目录内容，无需重启服务。
 
-两个来源会分别只读挂载为 `/library/漫画` 和 `/library/小说`，后端仍只扫描一个统一根目录。首次打开“书架设置”后，可把 `漫画` 目录设为漫画、`小说` 目录设为图书；各自下面的完整层级会实时显示。数据库保存在 `STATE_DIR`，字体独立挂载自 `FONT_DIR_HOST`；服务端每次读取字体列表都会实时扫描该目录。
+## 在线读取策略
 
-Compose 默认只监听 `127.0.0.1:8080`，请通过 NAS 自带反向代理、Caddy、Nginx Proxy Manager 或 Traefik 提供 `https://read.alumos.cn`。容器根文件系统和两个书库挂载均为只读，并移除了全部 Linux capabilities。
+- EPUB/MOBI/AZW3：用兼容 `File.slice()` 的远程文件对象按需请求 ZIP 目录、章节和资源。
+- 固定版式 EPUB：由 foliate-js fixed-layout 渲染，保留书籍语义和排版；仅短暂预取后续 3 节。
+- CBZ/ZIP：服务端扫描时缓存自然排序的页目录；客户端保留当前单双页及后续 4 页的短期窗口。
+- PDF：关闭自动整本预取，以 64 KB Range 加载交叉引用和当前页。
+- 封面与字体可浏览器缓存；正文、漫画页和 Range 响应使用 `private, no-store`。
 
-镜像由 GitHub Actions 在每次推送到 `main` 后自动发布为 `ghcr.io/alumos/lumosreader:latest`，同时提供 `linux/amd64` 和 `linux/arm64`。如果 GHCR 包仍为私有，需要先在 NAS 登录：`docker login ghcr.io`。
+## API
 
-## 在线读取原理
-
-- 排版型 EPUB、MOBI、AZW3 使用 HTTP Range 和一个兼容 `File.slice()` 的远程文件对象，解析器只请求目录、当前章节和当前图片所需的字节范围。
-- PDF.js 以 64 KB Range 分块读取交叉引用和当前页面，并关闭自动预取。
-- CBZ 和固定版式漫画 EPUB 由服务端读取 ZIP 目录，客户端逐页请求 `/pages/{page}`，并在内存中预加载后续 6 页，不会先传整个压缩包。
-
-服务端始终直接读取只读挂载并写入响应，不创建书籍副本或页面缓存目录。正文 Range、漫画页和漫画目录响应均使用 `Cache-Control: private, no-store`；阅读器只保留当前版面和后续 6 页的短期内存，退出阅读器时释放。体积很小且会反复显示的封面、字体保留一天浏览器缓存。
-
-因此打开书不会下载全本，也不需要在章节结束时再清理持久缓存；读完整本后累计流量自然可能接近整本大小，但不会在服务端、浏览器存储中再生成一份完整书籍。
-
-## 服务端发现
-
-Android 客户端只需保存服务端根地址。`GET /api/server` 会返回 API 版本、认证要求和支持格式；登录后从 `GET /api/books` 获取书库。
-
-当前 API 版本为 v4。书库文件只读，封面、正文和字体均通过同一服务端地址提供；字体列表和下载地址由 `GET /api/fonts` 返回，后续 Rust Android 客户端不需要直接连接 NAS。
+`GET /api/server` 返回 API 版本、认证要求与支持格式。登录后使用 `GET /api/books` 获取书库；书籍正文、封面、漫画页、字体、进度与统计均由同一服务端地址提供。

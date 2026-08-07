@@ -1,107 +1,21 @@
-import {
-  ArrowLeft,
-  BookOpen,
-  ChevronLeft,
-  ChevronRight,
-  ListTree,
-  LoaderCircle,
-  LocateFixed,
-  Save,
-  Settings2,
-  Trash2,
-  X,
-} from "lucide-react";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ChevronLeft, ChevronRight, ListTree, LocateFixed, Save, Settings2, Trash2, X } from "lucide-react";
+import { CSSProperties, useCallback, useEffect, useState } from "react";
 import { cachedFontURL, FontLibrary } from "./Fonts";
-import { Book, ComicPage, RemoteFile, addReadingTime, api, contentURL, fileStem, saveProgress } from "./model";
+import { Book, fileStem } from "./model";
+import { installFoliatePolyfills } from "./reader/compat";
+import { ComicReader, PDFReader, TextReader } from "./reader/DocumentReaders";
+import { FoliateReader } from "./reader/FoliateReader";
+import { useReadingTimer } from "./reader/hooks";
+import { builtInTemplates, loadSettings, loadTemplates, withoutTemplate } from "./reader/settings";
+import { Chapter, ReaderControls, ReadingSettings, ReadingTemplate } from "./reader/types";
 
-type LegacyTheme = "paper" | "clean" | "eink" | "night";
-type ReadingSettings = {
-  template: string;
-  backgroundColor: string;
-  textColor: string;
-  font: "book" | "serif" | "sans" | "system" | "custom";
-  fontFile: string;
-  fontSize: number;
-  lineHeight: number;
-  paragraphSpacing: number;
-  letterSpacing: number;
-  columns: 1 | 2;
-  animation: "none" | "slide" | "fade";
-  readingDirection: "auto" | "ltr" | "rtl";
-  showPageButtons: boolean;
-};
-type ReadingTemplate = {
-  id: string;
-  name: string;
-  hint: string;
-  settings: Omit<ReadingSettings, "template">;
-  custom?: boolean;
-};
-type Chapter = { label: string; href: string; level: number };
+installFoliatePolyfills();
+
+const previousPageKeys = new Set(["ArrowLeft", "AudioVolumeUp", "VolumeUp"]);
+const nextPageKeys = new Set(["ArrowRight", "AudioVolumeDown", "VolumeDown"]);
 type ChromeItem =
   | { kind: "volume"; book: Book; label: string; number: number }
   | { kind: "chapter"; chapter: Chapter; label: string; number: number };
-type ReaderControls = {
-  previous: () => void;
-  next: () => void;
-  seek?: (progress: number) => void;
-  chapters?: Chapter[];
-  location?: string;
-  currentChapter?: string;
-  goToChapter?: (href: string) => void;
-};
-
-const comicPreloadPages = 6;
-const previousPageKeys = new Set(["ArrowLeft", "AudioVolumeUp", "VolumeUp"]);
-const nextPageKeys = new Set(["ArrowRight", "AudioVolumeDown", "VolumeDown"]);
-const comicWindowEnd = (current: number, total: number, visible = 1) => Math.min(total, current + visible + comicPreloadPages);
-if (import.meta.env.DEV) console.assert(comicWindowEnd(0, 100) === 7 && comicWindowEnd(95, 100, 2) === 100, "漫画预加载窗口异常");
-const objectWithGroupBy = Object as ObjectConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) => Record<PropertyKey, unknown[]> };
-const mapWithGroupBy = Map as MapConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => unknown) => Map<unknown, unknown[]> };
-
-// foliate-js 1.0.1 requires these ES2024 methods; Safari gained them after 15.4.
-if (!objectWithGroupBy.groupBy) objectWithGroupBy.groupBy = (items, key) => {
-  const groups: Record<PropertyKey, unknown[]> = Object.create(null);
-  let index = 0;
-  for (const item of items) (groups[key(item, index++)] ??= []).push(item);
-  return groups;
-};
-if (!mapWithGroupBy.groupBy) mapWithGroupBy.groupBy = (items, key) => {
-  const groups = new Map<unknown, unknown[]>();
-  let index = 0;
-  for (const item of items) {
-    const group = key(item, index++);
-    const values = groups.get(group);
-    if (values) values.push(item); else groups.set(group, [item]);
-  }
-  return groups;
-};
-
-const defaultSettings: ReadingSettings = {
-  template: "literary",
-  backgroundColor: "#f7f1e4",
-  textColor: "#29261f",
-  font: "book",
-  fontFile: "",
-  fontSize: 19,
-  lineHeight: 1.8,
-  paragraphSpacing: 0.8,
-  letterSpacing: 0,
-  columns: 1,
-  animation: "slide",
-  readingDirection: "auto",
-  showPageButtons: true,
-};
-
-const builtInTemplates: ReadingTemplate[] = [
-  { id: "web", name: "网文阅读", hint: "大字舒展", settings: { ...withoutTemplate(defaultSettings), backgroundColor: "#ffffff", textColor: "#202522", fontSize: 21, lineHeight: 1.95, paragraphSpacing: 1, letterSpacing: 0.02 } },
-  { id: "literary", name: "精品文学", hint: "纸感留白", settings: withoutTemplate(defaultSettings) },
-  { id: "eink", name: "墨水屏", hint: "纯黑无动画", settings: { ...withoutTemplate(defaultSettings), backgroundColor: "#ffffff", textColor: "#000000", fontSize: 20, lineHeight: 1.75, animation: "none" } },
-  { id: "comic", name: "漫画优化", hint: "日漫右翻", settings: { ...withoutTemplate(defaultSettings), backgroundColor: "#ffffff", textColor: "#000000", columns: 2, animation: "none", readingDirection: "rtl" } },
-  { id: "night", name: "夜间阅读", hint: "低亮深色", settings: { ...withoutTemplate(defaultSettings), backgroundColor: "#161a18", textColor: "#d9ddd9", lineHeight: 1.85 } },
-];
 
 export function Reader({ book, collection, onBook, onClose }: { book: Book; collection: Book[]; onBook: (book: Book) => void; onClose: () => void }) {
   const [progress, setProgress] = useState(book.progress);
@@ -110,17 +24,15 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
   const [panel, setPanel] = useState<"menu" | "settings">();
   const [controls, setControls] = useState<ReaderControls>();
   const [customFontURL, setCustomFontURL] = useState("");
-  const imageComic = book.format === "cbz" || book.format === "epub" && book.is_comic;
-  const styleable = !imageComic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3" || book.format === "txt");
+  const imageComic = book.format === "cbz";
+  const visualPages = imageComic || Boolean(book.fixed_layout);
+  const styleable = !book.fixed_layout && (["epub", "mobi", "azw3", "txt"] as Book["format"][]).includes(book.format);
   const direction = settings.readingDirection === "auto" ? book.page_direction ?? "ltr" : settings.readingDirection;
   const connectControls = useCallback((value?: ReaderControls) => setControls(value), []);
   const toggleMenu = useCallback(() => setPanel((current) => current === "menu" ? undefined : "menu"), []);
 
   useReadingTimer(book.id);
-  useEffect(() => {
-    setProgress(book.progress);
-    setPanel(undefined);
-  }, [book]);
+  useEffect(() => { setProgress(book.progress); setPanel(undefined); }, [book]);
   useEffect(() => { localStorage.setItem("lumos-reading-settings", JSON.stringify(settings)); }, [settings]);
   useEffect(() => { localStorage.setItem("lumos-reading-templates", JSON.stringify(customTemplates)); }, [customTemplates]);
   useEffect(() => {
@@ -152,7 +64,7 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
     <div className="reader-body">
       {imageComic && <ComicReader book={book} settings={settings} direction={direction} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
       {book.format === "txt" && <TextReader book={book} settings={settings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
-      {!imageComic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={settings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
+      {!imageComic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <FoliateReader book={book} settings={settings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
       {book.format === "pdf" && <PDFReader book={book} settings={settings} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
     </div>
     <small className="reader-location">{controls?.location ?? `${Math.round(progress * 100)}%`}</small>
@@ -161,7 +73,7 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
       settings={settings}
       templates={[...builtInTemplates, ...customTemplates]}
       styleable={styleable}
-      comic={imageComic}
+      visualPages={visualPages}
       onChange={setSettings}
       onClose={() => setPanel(undefined)}
       onDelete={(id) => setCustomTemplates((templates) => templates.filter((template) => template.id !== id))}
@@ -192,9 +104,7 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onSettings
   const locateCurrent = () => {
     const index = chapters.findIndex((chapter) => chapter.href === controls?.currentChapter);
     if (index < 0) return;
-    setQuery("");
-    setDescending(false);
-    setPage(Math.floor((volumes.length + index) / 20));
+    setQuery(""); setDescending(false); setPage(Math.floor((volumes.length + index) / 20));
   };
   return <div className="reader-chrome">
     {chaptersOpen && (volumes.length > 0 || chapters.length > 0) && <aside className="chapter-panel">
@@ -219,377 +129,11 @@ function ReaderChrome({ book, collection, progress, controls, onBook, onSettings
   </div>;
 }
 
-function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onProgress }: {
-  book: Book;
-  settings: ReadingSettings;
-  customFontURL: string;
-  onCenter: () => void;
-  onControls: (controls?: ReaderControls) => void;
-  onProgress: (value: number) => void;
-}) {
-  const root = useRef<HTMLDivElement>(null);
-  const view = useRef<FoliateViewElement | undefined>(undefined);
-  const lastLocation = useRef<unknown>(undefined);
-  const saveTimer = useRef(0);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [location, setLocation] = useState("");
-  const [currentChapter, setCurrentChapter] = useState("");
-  const [retry, setRetry] = useState(0);
-  const [failure, setFailure] = useState("");
-
-  useEffect(() => {
-    setStatus("loading");
-    setFailure("");
-    setChapters([]);
-    setLocation("");
-    setCurrentChapter("");
-    let active = true;
-    let initialized = false;
-    let currentSection = 0;
-    let preloadTimer = 0;
-    let preloadRun = 0;
-    let initializationTimer = 0;
-    let stage = "载入排版脚本";
-    let element: FoliateViewElement | undefined;
-    let pendingProgress: { position: number; locator: string } | undefined;
-    const preloaded = new Set<number>();
-    const preload = async (current: number, run: number) => {
-      const sections = element?.book?.sections;
-      if (!book.is_comic || !sections) return;
-      const end = comicWindowEnd(current, sections.length);
-      for (const index of preloaded) {
-        if (index >= current && index < end) continue;
-        sections[index]?.unload?.();
-        preloaded.delete(index);
-      }
-      for (let index = current + 1; index < end; index++) {
-        if (!active || run !== preloadRun) return;
-        if (preloaded.has(index)) continue;
-        preloaded.add(index);
-        try {
-          await sections[index]?.load?.();
-        } catch {
-          preloaded.delete(index);
-        }
-      }
-    };
-    const schedulePreload = (current: number) => {
-      currentSection = current;
-      if (!initialized || !book.is_comic) return;
-      const run = ++preloadRun;
-      window.clearTimeout(preloadTimer);
-      preloadTimer = window.setTimeout(() => void preload(current, run), 200);
-    };
-    const persist = (keepalive = false) => {
-      if (!pendingProgress) return;
-      const saved = pendingProgress;
-      pendingProgress = undefined;
-      saveProgress(book.id, saved.position, saved.locator, keepalive).catch(() => undefined);
-    };
-    const initialize = async () => {
-      const { makeBook } = await import("foliate-js/view.js");
-      if (!active || !root.current) return;
-      element = document.createElement("foliate-view") as FoliateViewElement;
-      view.current = element;
-      root.current.append(element);
-      element.addEventListener("relocate", ((event: CustomEvent) => {
-        const section = Number(event.detail?.section?.current ?? event.detail?.index);
-        if (Number.isInteger(section)) schedulePreload(section);
-        const chapter = event.detail?.tocItem;
-        const page = event.detail?.location;
-        const pageLabel = Number.isInteger(page?.current) && Number.isInteger(page?.total) ? `第 ${page.current + 1} / ${page.total} 页` : "";
-        setLocation([chapter?.label, pageLabel].filter(Boolean).join(" · "));
-        setCurrentChapter(typeof chapter?.href === "string" ? chapter.href : "");
-        const position = Number(event.detail?.fraction);
-        if (!Number.isFinite(position)) return;
-        const bounded = Math.max(0, Math.min(1, position));
-        const locator = typeof event.detail?.cfi === "string" ? event.detail.cfi : JSON.stringify({ fraction: bounded });
-        lastLocation.current = locator;
-        onProgress(bounded);
-        pendingProgress = { position: bounded, locator };
-        window.clearTimeout(saveTimer.current);
-        saveTimer.current = window.setTimeout(() => persist(), 1200);
-      }) as EventListener);
-      stage = "解析书籍";
-      const parsed = await makeBook(new RemoteFile(contentURL(book), `${book.title}.${book.format}`, book.size, bookMIME(book.format)));
-      if (book.is_comic && settings.readingDirection !== "auto") parsed.dir = settings.readingDirection;
-      stage = "创建阅读页面";
-      await element.open(parsed);
-      applySettings(element, settings, customFontURL);
-      const savedLocation = lastLocation.current ?? (book.locator?.startsWith("epubcfi(") ? book.locator : book.progress > 0 ? { fraction: book.progress } : undefined);
-      stage = "分页正文";
-      await element.init({ lastLocation: savedLocation, showTextStart: !savedLocation });
-      if (active) {
-        initialized = true;
-        setChapters(flattenTOC(element.book?.toc ?? []));
-        setStatus("ready");
-        schedulePreload(currentSection);
-      }
-    };
-    const timeout = new Promise<never>((_, reject) => {
-      initializationTimer = window.setTimeout(() => {
-        reject(new Error(`${stage}超过 20 秒`));
-      }, 20000);
-    });
-    void Promise.race([initialize(), timeout]).catch((error) => {
-      if (!active) return;
-      console.error("Reader initialization failed", error);
-      active = false;
-      setFailure(error instanceof Error ? error.message : String(error));
-      setStatus("error");
-    }).finally(() => window.clearTimeout(initializationTimer));
-    return () => {
-      active = false;
-      preloadRun++;
-      window.clearTimeout(initializationTimer);
-      window.clearTimeout(preloadTimer);
-      window.clearTimeout(saveTimer.current);
-      persist(true);
-      for (const index of preloaded) element?.book?.sections?.[index]?.unload?.();
-      preloaded.clear();
-      element?.close();
-      element?.remove();
-      view.current = undefined;
-    };
-  }, [book, onProgress, retry, settings.readingDirection]);
-
-  useEffect(() => { if (view.current) applySettings(view.current, settings, customFontURL); }, [settings, customFontURL]);
-
-  const move = useCallback(async (action: "previous" | "next") => {
-    const element = view.current;
-    if (!element) return;
-    await (action === "previous" ? element.prev() : element.next());
-    if (settings.animation !== "none") element.animate(settings.animation === "slide"
-      ? [{ opacity: .35, transform: "translateX(6%)" }, { opacity: 1, transform: "translateX(0)" }]
-      : [{ opacity: .15 }, { opacity: 1 }], { duration: 240, easing: "cubic-bezier(.22,.8,.25,1)" });
-  }, [settings.animation]);
-
-  useEffect(() => {
-    if (status !== "ready") return;
-    onControls({
-      previous: () => void move("previous"),
-      next: () => void move("next"),
-      seek: (value) => void view.current?.goToFraction(value),
-      chapters,
-      location,
-      currentChapter,
-      goToChapter: (href) => void view.current?.goTo(href),
-    });
-    return () => onControls(undefined);
-  }, [chapters, currentChapter, location, move, onControls, status]);
-
-  return <div className="reflow-stage">
-    <div ref={root} className="foliate-host" />
-    {status === "loading" && <ReaderLoading />}
-    {status === "error" && <div className="reader-message"><BookOpen size={40} /><h2>排版失败</h2><p>{failure || "无法打开这本书"}</p><button onClick={() => setRetry((value) => value + 1)}>重新排版</button></div>}
-    {status === "ready" && <PageZones visible={settings.showPageButtons} onLeft={() => void move("previous")} onCenter={onCenter} onRight={() => void move("next")} />}
-  </div>;
-}
-
-function applySettings(view: FoliateViewElement, settings: ReadingSettings, customFontURL: string) {
-  const renderer = view.renderer;
-  if (!renderer) return;
-  renderer.setAttribute("flow", "paginated");
-  renderer.setAttribute("max-column-count", String(settings.columns));
-  renderer.setAttribute("max-inline-size", settings.columns === 2 ? "620px" : "760px");
-  renderer.setAttribute("gap", settings.columns === 2 ? "6%" : "8%");
-  renderer.toggleAttribute("animated", settings.animation === "slide");
-  renderer.setStyles?.(bookStyles(settings, customFontURL));
-}
-
-function bookStyles(settings: ReadingSettings, customFontURL: string) {
-  const custom = settings.font === "custom" && customFontURL ? `@font-face { font-family: LumosCustom; src: url("${customFontURL}"); }` : "";
-  const familyRule = settings.font === "book" ? "" : `font-family: ${fontFamily(settings.font)} !important;`;
-  return `${custom}
-    :root { --theme-bg-color: ${settings.backgroundColor}; }
-    html, body { background: ${settings.backgroundColor} !important; color: ${settings.textColor} !important; ${familyRule}
-      font-size: ${settings.fontSize}px !important; line-height: ${settings.lineHeight} !important; letter-spacing: ${settings.letterSpacing}em !important; }
-    p { margin-block: 0 ${settings.paragraphSpacing}em !important; text-align: justify; }
-    a { color: ${settings.textColor} !important; }`;
-}
-
-function TextReader({ book, settings, customFontURL, onCenter, onControls, onProgress }: {
-  book: Book;
-  settings: ReadingSettings;
-  customFontURL: string;
-  onCenter: () => void;
-  onControls: (controls?: ReaderControls) => void;
-  onProgress: (value: number) => void;
-}) {
-  const [text, setText] = useState("");
-  const article = useRef<HTMLElement>(null);
-  useEffect(() => {
-    fetch(contentURL(book)).then((response) => response.text()).then((content) => {
-      setText(content);
-      requestAnimationFrame(() => {
-        const element = article.current;
-        if (element) element.scrollTop = book.progress * Math.max(0, element.scrollHeight - element.clientHeight);
-      });
-    });
-  }, [book]);
-  const save = useMemo(() => debounce(() => {
-    const element = article.current;
-    if (!element) return;
-    const available = element.scrollHeight - element.clientHeight;
-    const position = available > 0 ? element.scrollTop / available : 1;
-    onProgress(position);
-    saveProgress(book.id, position, String(element.scrollTop)).catch(() => undefined);
-  }, 400), [book.id, onProgress]);
-  useEffect(() => () => save.cancel(), [save]);
-  useEffect(() => {
-    const scroll = (pages: number) => {
-      const element = article.current;
-      if (!element) return;
-      element.scrollBy({ top: pages * element.clientHeight * 0.88, behavior: settings.animation === "none" ? "auto" : "smooth" });
-    };
-    onControls({
-      previous: () => scroll(-1),
-      next: () => scroll(1),
-      seek: (value) => {
-        const element = article.current;
-        if (element) element.scrollTop = value * Math.max(0, element.scrollHeight - element.clientHeight);
-      },
-    });
-    return () => onControls(undefined);
-  }, [onControls, settings.animation]);
-  const style = {
-    "--reader-bg": settings.backgroundColor,
-    "--reader-fg": settings.textColor,
-    "--reader-font": fontFamily(settings.font),
-    "--reader-size": `${settings.fontSize}px`,
-    "--reader-leading": settings.lineHeight,
-    "--reader-tracking": `${settings.letterSpacing}em`,
-    "--reader-paragraph": `${settings.paragraphSpacing}em`,
-  } as CSSProperties;
-  return <>
-    {settings.font === "custom" && customFontURL && <style>{`@font-face { font-family: LumosCustom; src: url("${customFontURL}"); }`}</style>}
-    <article ref={article} className="text-page" style={style} onScroll={save} onClick={onCenter}>{text ? text.split(/\n\s*\n/).map((paragraph, index) => <p key={index}>{paragraph}</p>) : "正在载入正文…"}</article>
-  </>;
-}
-
-function ComicReader({ book, settings, direction, onCenter, onControls, onProgress }: { book: Book; settings: ReadingSettings; direction: "ltr" | "rtl"; onCenter: () => void; onControls: (controls?: ReaderControls) => void; onProgress: (value: number) => void }) {
-  const [pages, setPages] = useState<ComicPage[]>([]);
-  const [page, setPage] = useState(0);
-  useEffect(() => {
-    api<{ pages: ComicPage[] }>(`/api/books/${book.id}/pages`).then((result) => {
-      setPages(result.pages);
-      setPage(Math.max(0, Math.min(result.pages.length - 1, Math.round(book.progress * Math.max(0, result.pages.length - 1)))));
-    });
-  }, [book]);
-  const turn = useCallback((delta: number) => {
-    setPage((current) => Math.max(0, Math.min(pages.length - 1, current + delta * settings.columns)));
-  }, [pages.length, settings.columns]);
-  useEffect(() => {
-    if (!pages.length) return;
-    const position = pages.length === 1 ? 1 : page / (pages.length - 1);
-    onProgress(position);
-    const timer = window.setTimeout(() => saveProgress(book.id, position, String(page)), 250);
-    return () => window.clearTimeout(timer);
-  }, [book.id, onProgress, page, pages.length]);
-  useEffect(() => {
-    onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, pages.length - 1))), location: pages.length ? `第 ${page + 1} / ${pages.length} 页` : undefined });
-    return () => onControls(undefined);
-  }, [onControls, page, pages.length, turn]);
-  if (!pages.length) return <ReaderLoading />;
-  return <div className="comic-stage">
-    <PageZones visible={settings.showPageButtons} onLeft={() => turn(-1)} onCenter={onCenter} onRight={() => turn(1)} />
-    <div className={`comic-pages ${direction}`}>
-      {pages.slice(page, comicWindowEnd(page, pages.length, settings.columns)).map((item, index) => {
-        const visible = index < settings.columns;
-        return <img key={item.index} className={visible ? `turn-${settings.animation}` : "comic-preload"} src={item.url} alt={visible ? `第 ${page + index + 1} 页` : ""} aria-hidden={!visible} loading="eager" decoding="async" fetchPriority={visible ? "high" : "low"} />;
-      })}
-    </div>
-  </div>;
-}
-
-function PDFReader({ book, settings, onCenter, onControls, onProgress }: { book: Book; settings: ReadingSettings; onCenter: () => void; onControls: (controls?: ReaderControls) => void; onProgress: (value: number) => void }) {
-  const stage = useRef<HTMLDivElement>(null);
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const documentRef = useRef<{ getPage: (page: number) => Promise<any> } | undefined>(undefined);
-  const loadingTask = useRef<{ destroy: () => Promise<void> } | undefined>(undefined);
-  const renderTask = useRef<{ cancel: () => void } | undefined>(undefined);
-  const [count, setCount] = useState(0);
-  const [page, setPage] = useState(0);
-  const turn = useCallback((delta: number) => {
-    setPage((current) => Math.max(0, Math.min(count - 1, current + delta)));
-  }, [count]);
-
-  useEffect(() => {
-    let active = true;
-    void import("pdfjs-dist").then(async (pdfjs) => {
-      pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
-      const task = pdfjs.getDocument({ url: contentURL(book), withCredentials: true, disableAutoFetch: true, disableStream: true, rangeChunkSize: 64 * 1024 });
-      loadingTask.current = task;
-      const pdf = await task.promise;
-      if (!active) return void task.destroy();
-      documentRef.current = pdf;
-      setCount(pdf.numPages);
-      setPage(Math.max(0, Math.min(pdf.numPages - 1, Math.round(book.progress * Math.max(0, pdf.numPages - 1)))));
-    }).catch(() => undefined);
-    return () => {
-      active = false;
-      renderTask.current?.cancel();
-      void loadingTask.current?.destroy();
-      loadingTask.current = undefined;
-      documentRef.current = undefined;
-    };
-  }, [book]);
-
-  useEffect(() => {
-    const pdf = documentRef.current;
-    const target = canvas.current;
-    const root = stage.current;
-    if (!pdf || !target || !root || !count) return;
-    let active = true;
-    void pdf.getPage(page + 1).then((pdfPage) => {
-      if (!active) return;
-      const initial = pdfPage.getViewport({ scale: 1 });
-      const fit = Math.min(root.clientWidth / initial.width, root.clientHeight / initial.height);
-      const scale = fit * Math.min(2, window.devicePixelRatio || 1);
-      const viewport = pdfPage.getViewport({ scale });
-      target.width = Math.ceil(viewport.width);
-      target.height = Math.ceil(viewport.height);
-      target.style.width = `${viewport.width / Math.min(2, window.devicePixelRatio || 1)}px`;
-      target.style.height = `${viewport.height / Math.min(2, window.devicePixelRatio || 1)}px`;
-      const task = pdfPage.render({ canvas: target, canvasContext: target.getContext("2d")!, viewport });
-      renderTask.current = task;
-      return task.promise.finally(() => pdfPage.cleanup());
-    }).catch(() => undefined);
-    const position = count === 1 ? 1 : page / (count - 1);
-    onProgress(position);
-    const timer = window.setTimeout(() => saveProgress(book.id, position, String(page)), 250);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-      renderTask.current?.cancel();
-    };
-  }, [book.id, count, onProgress, page]);
-
-  useEffect(() => {
-    onControls({ previous: () => turn(-1), next: () => turn(1), seek: (value) => setPage(Math.round(value * Math.max(0, count - 1))), location: count ? `第 ${page + 1} / ${count} 页` : undefined });
-    return () => onControls(undefined);
-  }, [count, onControls, page, turn]);
-  if (!count) return <ReaderLoading />;
-  return <div ref={stage} className="pdf-stage">
-    <PageZones visible={settings.showPageButtons} onLeft={() => turn(-1)} onCenter={onCenter} onRight={() => turn(1)} />
-    <canvas key={page} ref={canvas} className={`turn-${settings.animation}`} />
-  </div>;
-}
-
-function PageZones({ visible, onLeft, onCenter, onRight }: { visible: boolean; onLeft: () => void; onCenter: () => void; onRight: () => void }) {
-  return <>
-    <button className={`tap-zone left ${visible ? "page-button-visible" : ""}`} aria-label="上一页" onClick={onLeft}>{visible && <span><ChevronLeft /></span>}</button>
-    <button className="tap-zone center" aria-label="显示阅读菜单" onClick={onCenter} />
-    <button className={`tap-zone right ${visible ? "page-button-visible" : ""}`} aria-label="下一页" onClick={onRight}>{visible && <span><ChevronRight /></span>}</button>
-  </>;
-}
-
-function SettingsPanel({ settings, templates, styleable, comic, onChange, onClose, onSave, onDelete }: {
+function SettingsPanel({ settings, templates, styleable, visualPages, onChange, onClose, onSave, onDelete }: {
   settings: ReadingSettings;
   templates: ReadingTemplate[];
   styleable: boolean;
-  comic: boolean;
+  visualPages: boolean;
   onChange: (value: ReadingSettings | ((current: ReadingSettings) => ReadingSettings)) => void;
   onClose: () => void;
   onSave: (name: string) => void;
@@ -613,14 +157,14 @@ function SettingsPanel({ settings, templates, styleable, comic, onChange, onClos
           <Range label="字号" value={settings.fontSize} min={14} max={32} step={1} suffix="px" onChange={(fontSize) => patch({ fontSize })} />
           <Range label="行间距" value={settings.lineHeight} min={1.2} max={2.4} step={0.05} onChange={(lineHeight) => patch({ lineHeight })} />
           <Range label="段间距" value={settings.paragraphSpacing} min={0} max={2} step={0.1} suffix="em" onChange={(paragraphSpacing) => patch({ paragraphSpacing })} />
-          <Range label="字间距" value={settings.letterSpacing} min={-0.05} max={0.3} step={0.01} suffix="em" onChange={(letterSpacing) => patch({ letterSpacing })} />
+          <Range label="字间距" value={settings.letterSpacing} min={-.05} max={.3} step={.01} suffix="em" onChange={(letterSpacing) => patch({ letterSpacing })} />
         </>}
         <label className="color-field">页面底色<input aria-label="页面底色" type="color" value={settings.backgroundColor} onChange={(event) => patch({ backgroundColor: event.target.value })} /></label>
         <label className="color-field">文字颜色<input aria-label="文字颜色" type="color" value={settings.textColor} onChange={(event) => patch({ textColor: event.target.value })} /></label>
-        {(styleable || comic) && <label>页面模式<select value={settings.columns} onChange={(event) => patch({ columns: Number(event.target.value) as 1 | 2 })}><option value={1}>单页</option><option value={2}>双页（横屏）</option></select></label>}
+        {(styleable || visualPages) && <label>页面模式<select value={settings.columns} onChange={(event) => patch({ columns: Number(event.target.value) as 1 | 2 })}><option value={1}>单页</option><option value={2}>双页（横屏）</option></select></label>}
         <label>翻页动画<select value={settings.animation} onChange={(event) => patch({ animation: event.target.value as ReadingSettings["animation"] })}><option value="none">无动画</option><option value="slide">平滑滑动</option><option value="fade">淡入淡出</option></select></label>
         <label className="toggle-field"><span>显示半透明翻页键</span><input type="checkbox" checked={settings.showPageButtons} onChange={(event) => patch({ showPageButtons: event.target.checked })} /></label>
-        {comic && <label>漫画阅读方向<select value={settings.readingDirection} onChange={(event) => patch({ readingDirection: event.target.value as ReadingSettings["readingDirection"] })}><option value="auto">自动识别</option><option value="rtl">日漫 · 从右向左</option><option value="ltr">普通 · 从左向右</option></select></label>}
+        {visualPages && <label>阅读方向<select value={settings.readingDirection} onChange={(event) => patch({ readingDirection: event.target.value as ReadingSettings["readingDirection"] })}><option value="auto">自动识别</option><option value="rtl">从右向左</option><option value="ltr">从左向右</option></select></label>}
       </section>
     </div>
   </aside>;
@@ -628,105 +172,4 @@ function SettingsPanel({ settings, templates, styleable, comic, onChange, onClos
 
 function Range({ label, value, min, max, step, suffix = "", onChange }: { label: string; value: number; min: number; max: number; step: number; suffix?: string; onChange: (value: number) => void }) {
   return <label className="range-field"><span>{label}<output>{value}{suffix}</output></span><input type="range" value={value} min={min} max={max} step={step} onChange={(event) => onChange(Number(event.target.value))} /></label>;
-}
-
-function ReaderLoading() {
-  return <div className="reader-loading"><LoaderCircle className="spin" /><span>正在排版…</span></div>;
-}
-
-function loadSettings(): ReadingSettings {
-  try {
-    return migrateSettings(JSON.parse(localStorage.getItem("lumos-reading-settings") ?? "{}"));
-  } catch {
-    return defaultSettings;
-  }
-}
-
-function loadTemplates(): ReadingTemplate[] {
-  try {
-    const value = JSON.parse(localStorage.getItem("lumos-reading-templates") ?? "[]");
-    return Array.isArray(value) ? value.slice(0, 12).map((template) => ({ ...template, settings: withoutTemplate(migrateSettings({ ...template.settings, template: template.id })) })) : [];
-  } catch {
-    return [];
-  }
-}
-
-function withoutTemplate(settings: ReadingSettings): Omit<ReadingSettings, "template"> {
-  const { template: _template, ...values } = settings;
-  return values;
-}
-
-function migrateSettings(saved: Partial<ReadingSettings> & { theme?: LegacyTheme }) {
-  const oldTheme = saved.theme ?? (["paper", "clean", "eink", "night"].includes(saved.template ?? "") ? saved.template as LegacyTheme : "paper");
-  const colors = legacyThemeColors(oldTheme);
-  const { theme: _theme, ...current } = saved;
-  return {
-    ...defaultSettings,
-    ...current,
-    backgroundColor: saved.backgroundColor ?? colors.background,
-    textColor: saved.textColor ?? colors.foreground,
-    font: saved.font === "custom" && !saved.fontFile ? "serif" : saved.font ?? defaultSettings.font,
-  };
-}
-
-function legacyThemeColors(theme: LegacyTheme) {
-  if (theme === "night") return { background: "#161a18", foreground: "#d9ddd9" };
-  if (theme === "eink") return { background: "#ffffff", foreground: "#000000" };
-  if (theme === "clean") return { background: "#ffffff", foreground: "#202522" };
-  return { background: "#f7f1e4", foreground: "#29261f" };
-}
-
-function fontFamily(font: ReadingSettings["font"]) {
-  if (font === "sans") return '"Noto Sans CJK SC", "Microsoft YaHei", sans-serif';
-  if (font === "system") return '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-  if (font === "custom") return "LumosCustom, serif";
-  return '"Noto Serif CJK SC", "Songti SC", "STSong", serif';
-}
-
-function bookMIME(format: Book["format"]) {
-  if (format === "epub") return "application/epub+zip";
-  if (format === "mobi") return "application/x-mobipocket-ebook";
-  return "application/vnd.amazon.ebook";
-}
-
-function flattenTOC(items: FoliateTOCItem[], level = 0): Chapter[] {
-  const chapters: Chapter[] = [];
-  for (const item of items) {
-    if (item.href && item.label) chapters.push({ label: item.label, href: item.href, level });
-    chapters.push(...flattenTOC(item.subitems ?? [], level + 1));
-  }
-  return chapters;
-}
-
-function useReadingTimer(bookID: string) {
-  useEffect(() => {
-    let last = Date.now();
-    let queued = 0;
-    let visible = document.visibilityState === "visible";
-    const flush = (force = false) => {
-      const now = Date.now();
-      if (visible) queued += Math.min(60, (now - last) / 1000);
-      last = now;
-      visible = document.visibilityState === "visible";
-      if (queued < (force ? 1 : 20)) return;
-      const seconds = Math.min(300, Math.floor(queued));
-      queued -= seconds;
-      addReadingTime(bookID, seconds).catch(() => undefined);
-    };
-    const timer = window.setInterval(() => flush(), 30000);
-    const visibility = () => flush(true);
-    document.addEventListener("visibilitychange", visibility);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", visibility);
-      flush(true);
-    };
-  }, [bookID]);
-}
-
-function debounce(callback: () => void, delay: number) {
-  let timer = 0;
-  const fn = () => { window.clearTimeout(timer); timer = window.setTimeout(callback, delay); };
-  fn.cancel = () => window.clearTimeout(timer);
-  return fn;
 }

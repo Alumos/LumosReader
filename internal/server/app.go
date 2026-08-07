@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"archive/zip"
@@ -51,7 +51,8 @@ type Book struct {
 	ShelfKind     string    `json:"shelf_kind"`
 	Category      string    `json:"category,omitempty"`
 	Series        string    `json:"series,omitempty"`
-	IsComic       bool      `json:"is_comic"`
+	IsComic       bool      `json:"is_comic"` // Kept for API v4 clients; rendering uses Format and FixedLayout.
+	FixedLayout   bool      `json:"fixed_layout,omitempty"`
 	PageDirection string    `json:"page_direction,omitempty"`
 	Size          int64     `json:"size"`
 	Modified      time.Time `json:"modified"`
@@ -61,6 +62,7 @@ type Book struct {
 	CoverURL      string    `json:"cover_url,omitempty"`
 	path          string
 	coverEntry    string
+	pageEntries   []string
 }
 
 type library struct {
@@ -142,20 +144,20 @@ func (l *library) Scan(shelves ...Bookshelf) (int, error) {
 				author = filepath.Base(parent)
 			}
 			book := Book{
-				ID:       id,
-				Title:    strings.TrimSuffix(filepath.Base(relative), filepath.Ext(relative)),
-				FileName: filepath.Base(relative),
-				Author:   author,
-				Format:   format,
-				Shelf:    shelfName,
-				Category: part(directories, 0),
-				Series:   part(directories, 1),
-				IsComic:  looksLikeComic(format, relative),
-				Size:     info.Size(),
-				Modified: info.ModTime(),
-				path:     path,
+				ID:        id,
+				Title:     strings.TrimSuffix(filepath.Base(relative), filepath.Ext(relative)),
+				FileName:  filepath.Base(relative),
+				Author:    author,
+				Format:    format,
+				Shelf:     shelfName,
+				Category:  part(directories, 0),
+				Series:    part(directories, 1),
+				ShelfKind: inferredShelfKind(format, relative),
+				Size:      info.Size(),
+				Modified:  info.ModTime(),
+				path:      path,
 			}
-			if book.IsComic {
+			if format == "cbz" && book.ShelfKind == "comic" {
 				book.PageDirection = "rtl"
 			}
 			if cached, ok := previous[path]; ok && cached.Size == info.Size() && cached.Modified.Equal(info.ModTime()) {
@@ -180,11 +182,9 @@ func (l *library) Scan(shelves ...Bookshelf) (int, error) {
 					if metadata.Series != "" {
 						book.Series = metadata.Series
 					}
-					book.IsComic = book.IsComic || metadata.Comic
+					book.FixedLayout = metadata.FixedLayout
 					if metadata.Direction != "" {
 						book.PageDirection = metadata.Direction
-					} else if book.IsComic {
-						book.PageDirection = "rtl"
 					}
 					book.coverEntry = metadata.Cover
 					if metadata.Cover != "" {
@@ -193,6 +193,7 @@ func (l *library) Scan(shelves ...Bookshelf) (int, error) {
 				}
 			case "cbz":
 				book.CoverURL = "/api/books/" + id + "/cover"
+				book.pageEntries = comicEntries(path)
 			}
 			if book.Series != "" && book.Category == book.Series {
 				book.Category = ""
@@ -225,30 +226,32 @@ func part(parts []string, index int) string {
 	return ""
 }
 
-func looksLikeComic(format, relative string) bool {
+func inferredShelfKind(format, relative string) string {
 	if format == "cbz" {
-		return true
+		return "comic"
 	}
 	name := strings.ToLower(filepath.ToSlash(relative))
-	return strings.Contains(name, "漫画") || strings.Contains(name, "manga") || strings.Contains(name, "comic") || strings.Contains(name, "コミック")
+	if strings.Contains(name, "漫画") || strings.Contains(name, "manga") || strings.Contains(name, "comic") || strings.Contains(name, "コミック") {
+		return "comic"
+	}
+	return "book"
 }
 
 func applyShelfKind(book *Book, kind string) {
 	switch kind {
 	case "comic":
-		book.ShelfKind, book.IsComic = "comic", true
-		if book.PageDirection == "" {
+		book.ShelfKind = "comic"
+		if book.Format == "cbz" && book.PageDirection == "" {
 			book.PageDirection = "rtl"
 		}
 	case "book":
-		book.ShelfKind, book.IsComic, book.PageDirection = "book", false, ""
+		book.ShelfKind = "book"
 	default:
-		if book.IsComic {
-			book.ShelfKind = "comic"
-		} else {
-			book.ShelfKind = "book"
+		if book.ShelfKind == "" {
+			book.ShelfKind = inferredShelfKind(book.Format, book.path)
 		}
 	}
+	book.IsComic = book.ShelfKind == "comic"
 }
 
 func (l *library) List() []Book {
@@ -756,9 +759,8 @@ func (a *app) handleCover(w http.ResponseWriter, r *http.Request) {
 	defer archive.Close()
 	var cover *zip.File
 	if book.Format == "cbz" {
-		files := comicFiles(archive.File)
-		if len(files) > 0 {
-			cover = files[0]
+		if len(book.pageEntries) > 0 {
+			cover = findZipFile(archive.File, book.pageEntries[0])
 		}
 	} else {
 		cover = findZipFile(archive.File, book.coverEntry)
@@ -782,26 +784,19 @@ func (a *app) handlePages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "书籍不存在")
 		return
 	}
-	if book.Format != "cbz" && (book.Format != "epub" || !book.IsComic) {
+	if book.Format != "cbz" {
 		writeError(w, http.StatusBadRequest, "这不是漫画书")
 		return
 	}
-	archive, err := zip.OpenReader(book.path)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "无法读取漫画压缩包")
-		return
-	}
-	defer archive.Close()
-	files, err := comicPageFiles(book, archive.File)
-	if err != nil {
+	if len(book.pageEntries) == 0 {
 		writeError(w, http.StatusUnprocessableEntity, "无法读取漫画页")
 		return
 	}
-	pages := make([]comicPage, len(files))
-	for index, file := range files {
+	pages := make([]comicPage, len(book.pageEntries))
+	for index, entry := range book.pageEntries {
 		pages[index] = comicPage{
 			Index: index,
-			Name:  filepath.Base(file.Name),
+			Name:  filepath.Base(entry),
 			URL:   fmt.Sprintf("/api/books/%s/pages/%d", book.ID, index),
 		}
 	}
@@ -815,7 +810,7 @@ func (a *app) handlePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "书籍不存在")
 		return
 	}
-	if book.Format != "cbz" && (book.Format != "epub" || !book.IsComic) {
+	if book.Format != "cbz" {
 		writeError(w, http.StatusBadRequest, "这不是漫画书")
 		return
 	}
@@ -830,23 +825,16 @@ func (a *app) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer archive.Close()
-	files, err := comicPageFiles(book, archive.File)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "无法读取漫画页")
-		return
-	}
-	if pageIndex >= len(files) {
+	if pageIndex >= len(book.pageEntries) {
 		writeError(w, http.StatusNotFound, "漫画页不存在")
 		return
 	}
-	serveZipFile(w, r, book, files[pageIndex], "private, no-store")
-}
-
-func comicPageFiles(book Book, files []*zip.File) ([]*zip.File, error) {
-	if book.Format == "epub" {
-		return epubComicFiles(files)
+	file := findZipFile(archive.File, book.pageEntries[pageIndex])
+	if file == nil {
+		writeError(w, http.StatusUnprocessableEntity, "漫画页索引已失效，请重新扫描")
+		return
 	}
-	return comicFiles(files), nil
+	serveZipFile(w, r, book, file, "private, no-store")
 }
 
 func serveZipFile(w http.ResponseWriter, r *http.Request, book Book, file *zip.File, cacheControl string) {
@@ -884,6 +872,20 @@ func comicFiles(files []*zip.File) []*zip.File {
 		return strings.Compare(naturalKey(a.Name), naturalKey(b.Name))
 	})
 	return images
+}
+
+func comicEntries(filename string) []string {
+	archive, err := zip.OpenReader(filename)
+	if err != nil {
+		return nil
+	}
+	defer archive.Close()
+	files := comicFiles(archive.File)
+	entries := make([]string, len(files))
+	for index, file := range files {
+		entries[index] = file.Name
+	}
+	return entries
 }
 
 func naturalKey(value string) string {

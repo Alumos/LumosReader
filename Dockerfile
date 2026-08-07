@@ -11,9 +11,11 @@ ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY *.go ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY web/embed.go ./web/embed.go
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /lumosreader .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /lumosreader ./cmd/lumosreader
 
 FROM scratch
 COPY --from=server /lumosreader /lumosreader

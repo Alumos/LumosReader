@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"archive/zip"
@@ -13,12 +13,12 @@ import (
 const maxEPUBMetadataSize = 4 << 20
 
 type epubMetadata struct {
-	Title     string
-	Author    string
-	Series    string
-	Cover     string
-	Comic     bool
-	Direction string
+	Title       string
+	Author      string
+	Series      string
+	Cover       string
+	FixedLayout bool
+	Direction   string
 }
 
 type epubPackage struct {
@@ -108,12 +108,12 @@ func readEPUBMetadata(filename string) (epubMetadata, error) {
 		}
 	}
 	return epubMetadata{
-		Title:     firstText(pkg.Metadata.Titles),
-		Author:    strings.Join(nonEmpty(pkg.Metadata.Creators), "、"),
-		Series:    series,
-		Cover:     coverPath,
-		Comic:     strings.EqualFold(layout, "pre-paginated") || strings.EqualFold(bookType, "comic"),
-		Direction: direction,
+		Title:       firstText(pkg.Metadata.Titles),
+		Author:      strings.Join(nonEmpty(pkg.Metadata.Creators), "、"),
+		Series:      series,
+		Cover:       coverPath,
+		FixedLayout: strings.EqualFold(layout, "pre-paginated") || strings.EqualFold(bookType, "comic"),
+		Direction:   direction,
 	}, nil
 }
 
@@ -140,74 +140,6 @@ func readEPUBPackage(files []*zip.File) (string, epubPackage, error) {
 		return "", epubPackage{}, err
 	}
 	return opfPath, pkg, nil
-}
-
-func epubComicFiles(files []*zip.File) ([]*zip.File, error) {
-	opfPath, pkg, err := readEPUBPackage(files)
-	if err != nil {
-		return nil, err
-	}
-	manifest := make(map[string]struct {
-		path      string
-		mediaType string
-	}, len(pkg.Manifest.Items))
-	for _, item := range pkg.Manifest.Items {
-		manifest[item.ID] = struct {
-			path      string
-			mediaType string
-		}{resolveArchivePath(opfPath, item.Href), item.MediaType}
-	}
-	pages := make([]*zip.File, 0, len(pkg.Spine.Items))
-	for _, item := range pkg.Spine.Items {
-		entry, ok := manifest[item.IDRef]
-		if !ok {
-			continue
-		}
-		if strings.HasPrefix(entry.mediaType, "image/") {
-			if file := findZipFile(files, entry.path); file != nil {
-				pages = append(pages, file)
-			}
-			continue
-		}
-		if file := epubPageImage(files, entry.path); file != nil {
-			pages = append(pages, file)
-		}
-	}
-	if len(pages) == 0 {
-		return nil, errors.New("EPUB comic has no image pages")
-	}
-	return pages, nil
-}
-
-func epubPageImage(files []*zip.File, documentPath string) *zip.File {
-	document := findZipFile(files, documentPath)
-	if document == nil || document.UncompressedSize64 > maxEPUBMetadataSize {
-		return nil
-	}
-	reader, err := document.Open()
-	if err != nil {
-		return nil
-	}
-	defer reader.Close()
-	decoder := xml.NewDecoder(io.LimitReader(reader, maxEPUBMetadataSize))
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			return nil
-		}
-		start, ok := token.(xml.StartElement)
-		if !ok || (start.Name.Local != "img" && start.Name.Local != "image") {
-			continue
-		}
-		for _, attribute := range start.Attr {
-			if attribute.Name.Local != "src" && attribute.Name.Local != "href" {
-				continue
-			}
-			if file := findZipFile(files, resolveArchivePath(documentPath, attribute.Value)); file != nil {
-				return file
-			}
-		}
-	}
 }
 
 func readXML(file *zip.File, target any) error {
