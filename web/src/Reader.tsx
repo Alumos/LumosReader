@@ -61,55 +61,23 @@ if (import.meta.env.DEV) console.assert(comicWindowEnd(0, 100) === 7 && comicWin
 const objectWithGroupBy = Object as ObjectConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) => Record<PropertyKey, unknown[]> };
 const mapWithGroupBy = Map as MapConstructor & { groupBy?: (items: Iterable<unknown>, key: (item: unknown, index: number) => unknown) => Map<unknown, unknown[]> };
 
-function ensureReaderCompatibility() {
-  const replaceChildren = function (this: ParentNode, ...nodes: (Node | string)[]) {
-    while (this.firstChild) this.removeChild(this.firstChild);
-    this.append(...nodes);
-  };
-  for (const prototype of [Element.prototype, DocumentFragment.prototype, Document.prototype]) {
-    if (!("replaceChildren" in prototype)) Object.defineProperty(prototype, "replaceChildren", { configurable: true, writable: true, value: replaceChildren });
+// foliate-js 1.0.1 requires these ES2024 methods; Safari gained them after 15.4.
+if (!objectWithGroupBy.groupBy) objectWithGroupBy.groupBy = (items, key) => {
+  const groups: Record<PropertyKey, unknown[]> = Object.create(null);
+  let index = 0;
+  for (const item of items) (groups[key(item, index++)] ??= []).push(item);
+  return groups;
+};
+if (!mapWithGroupBy.groupBy) mapWithGroupBy.groupBy = (items, key) => {
+  const groups = new Map<unknown, unknown[]>();
+  let index = 0;
+  for (const item of items) {
+    const group = key(item, index++);
+    const values = groups.get(group);
+    if (values) values.push(item); else groups.set(group, [item]);
   }
-  if (!Array.prototype.at) Object.defineProperty(Array.prototype, "at", { configurable: true, writable: true, value<T>(this: T[], index: number) {
-    const offset = Math.trunc(Number(index)) || 0;
-    const position = offset < 0 ? this.length + offset : offset;
-    return this[position];
-  } });
-  if (!("replaceAll" in String.prototype)) Object.defineProperty(String.prototype, "replaceAll", { configurable: true, writable: true, value(this: string, search: string | RegExp, replacement: string) {
-    if (search instanceof RegExp) {
-      if (!search.global) throw new TypeError("replaceAll requires a global regular expression");
-      return this.replace(search, replacement);
-    }
-    return this.replace(new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), replacement);
-  } });
-  if (!("findLastIndex" in Array.prototype)) Object.defineProperty(Array.prototype, "findLastIndex", { configurable: true, writable: true, value<T>(this: T[], predicate: (value: T, index: number, array: T[]) => unknown, thisArg?: unknown) {
-    for (let index = this.length - 1; index >= 0; index--) if (predicate.call(thisArg, this[index], index, this)) return index;
-    return -1;
-  } });
-  if (typeof objectWithGroupBy.groupBy !== "function") Object.defineProperty(Object, "groupBy", { configurable: true, writable: true, value(items: Iterable<unknown>, key: (item: unknown, index: number) => PropertyKey) {
-    const groups: Record<PropertyKey, unknown[]> = Object.create(null);
-    let index = 0;
-    for (const item of items) (groups[key(item, index++)] ??= []).push(item);
-    return groups;
-  } });
-  if (typeof mapWithGroupBy.groupBy !== "function") Object.defineProperty(Map, "groupBy", { configurable: true, writable: true, value(items: Iterable<unknown>, key: (item: unknown, index: number) => unknown) {
-    const groups = new Map<unknown, unknown[]>();
-    let index = 0;
-    for (const item of items) {
-      const group = key(item, index++);
-      const values = groups.get(group);
-      if (values) values.push(item); else groups.set(group, [item]);
-    }
-    return groups;
-  } });
-  if (!("WeakRef" in globalThis)) Object.defineProperty(globalThis, "WeakRef", { configurable: true, writable: true, value: class<T extends object> {
-    private value: T;
-    constructor(value: T) { this.value = value; }
-    deref() { return this.value; }
-  } });
-}
-
-ensureReaderCompatibility();
-if (import.meta.env.DEV) console.assert([1, 2].at(-1) === 2 && objectWithGroupBy.groupBy!([1, 2], (value) => Number(value) % 2)[0]?.[0] === 2, "阅读器兼容层异常");
+  return groups;
+};
 
 const defaultSettings: ReadingSettings = {
   template: "literary",
@@ -142,7 +110,8 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
   const [panel, setPanel] = useState<"menu" | "settings">();
   const [controls, setControls] = useState<ReaderControls>();
   const [customFontURL, setCustomFontURL] = useState("");
-  const styleable = !book.is_comic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3" || book.format === "txt");
+  const imageComic = book.format === "cbz" || book.format === "epub" && book.is_comic;
+  const styleable = !imageComic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3" || book.format === "txt");
   const direction = settings.readingDirection === "auto" ? book.page_direction ?? "ltr" : settings.readingDirection;
   const connectControls = useCallback((value?: ReaderControls) => setControls(value), []);
   const toggleMenu = useCallback(() => setPanel((current) => current === "menu" ? undefined : "menu"), []);
@@ -179,10 +148,11 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
   }, [controls]);
 
   return <div className="reader" style={{ "--reader-bg": settings.backgroundColor, "--reader-fg": settings.textColor } as CSSProperties}>
+    <button className="reader-exit" aria-label="返回书库" onClick={onClose}><ArrowLeft size={18} /><span>书库</span></button>
     <div className="reader-body">
-      {book.format === "cbz" && <ComicReader book={book} settings={settings} direction={direction} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
+      {imageComic && <ComicReader book={book} settings={settings} direction={direction} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
       {book.format === "txt" && <TextReader book={book} settings={settings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
-      {(book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={settings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
+      {!imageComic && (book.format === "epub" || book.format === "mobi" || book.format === "azw3") && <ReflowReader book={book} settings={settings} customFontURL={customFontURL} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
       {book.format === "pdf" && <PDFReader book={book} settings={settings} onCenter={toggleMenu} onControls={connectControls} onProgress={setProgress} />}
     </div>
     <small className="reader-location">{controls?.location ?? `${Math.round(progress * 100)}%`}</small>
@@ -191,7 +161,7 @@ export function Reader({ book, collection, onBook, onClose }: { book: Book; coll
       settings={settings}
       templates={[...builtInTemplates, ...customTemplates]}
       styleable={styleable}
-      comic={book.is_comic}
+      comic={imageComic}
       onChange={setSettings}
       onClose={() => setPanel(undefined)}
       onDelete={(id) => setCustomTemplates((templates) => templates.filter((template) => template.id !== id))}
@@ -266,9 +236,11 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onP
   const [location, setLocation] = useState("");
   const [currentChapter, setCurrentChapter] = useState("");
   const [retry, setRetry] = useState(0);
+  const [failure, setFailure] = useState("");
 
   useEffect(() => {
     setStatus("loading");
+    setFailure("");
     setChapters([]);
     setLocation("");
     setCurrentChapter("");
@@ -278,6 +250,7 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onP
     let preloadTimer = 0;
     let preloadRun = 0;
     let initializationTimer = 0;
+    let stage = "载入排版脚本";
     let element: FoliateViewElement | undefined;
     let pendingProgress: { position: number; locator: string } | undefined;
     const preloaded = new Set<number>();
@@ -338,11 +311,14 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onP
         window.clearTimeout(saveTimer.current);
         saveTimer.current = window.setTimeout(() => persist(), 1200);
       }) as EventListener);
+      stage = "解析书籍";
       const parsed = await makeBook(new RemoteFile(contentURL(book), `${book.title}.${book.format}`, book.size, bookMIME(book.format)));
       if (book.is_comic && settings.readingDirection !== "auto") parsed.dir = settings.readingDirection;
+      stage = "创建阅读页面";
       await element.open(parsed);
       applySettings(element, settings, customFontURL);
       const savedLocation = lastLocation.current ?? (book.locator?.startsWith("epubcfi(") ? book.locator : book.progress > 0 ? { fraction: book.progress } : undefined);
+      stage = "分页正文";
       await element.init({ lastLocation: savedLocation, showTextStart: !savedLocation });
       if (active) {
         initialized = true;
@@ -352,12 +328,15 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onP
       }
     };
     const timeout = new Promise<never>((_, reject) => {
-      initializationTimer = window.setTimeout(() => reject(new Error("Reader initialization timed out")), 20000);
+      initializationTimer = window.setTimeout(() => {
+        reject(new Error(`${stage}超过 20 秒`));
+      }, 20000);
     });
     void Promise.race([initialize(), timeout]).catch((error) => {
       if (!active) return;
       console.error("Reader initialization failed", error);
       active = false;
+      setFailure(error instanceof Error ? error.message : String(error));
       setStatus("error");
     }).finally(() => window.clearTimeout(initializationTimer));
     return () => {
@@ -403,7 +382,7 @@ function ReflowReader({ book, settings, customFontURL, onCenter, onControls, onP
   return <div className="reflow-stage">
     <div ref={root} className="foliate-host" />
     {status === "loading" && <ReaderLoading />}
-    {status === "error" && <div className="reader-message"><BookOpen size={40} /><h2>排版失败</h2><p>请重试；如果仍然失败，请更新 Android 系统 WebView。</p><button onClick={() => setRetry((value) => value + 1)}>重新排版</button></div>}
+    {status === "error" && <div className="reader-message"><BookOpen size={40} /><h2>排版失败</h2><p>{failure || "无法打开这本书"}</p><button onClick={() => setRetry((value) => value + 1)}>重新排版</button></div>}
     {status === "ready" && <PageZones visible={settings.showPageButtons} onLeft={() => void move("previous")} onCenter={onCenter} onRight={() => void move("next")} />}
   </div>;
 }

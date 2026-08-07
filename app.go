@@ -782,8 +782,8 @@ func (a *app) handlePages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "书籍不存在")
 		return
 	}
-	if book.Format != "cbz" {
-		writeError(w, http.StatusBadRequest, "这不是漫画压缩包")
+	if book.Format != "cbz" && (book.Format != "epub" || !book.IsComic) {
+		writeError(w, http.StatusBadRequest, "这不是漫画书")
 		return
 	}
 	archive, err := zip.OpenReader(book.path)
@@ -792,7 +792,11 @@ func (a *app) handlePages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer archive.Close()
-	files := comicFiles(archive.File)
+	files, err := comicPageFiles(book, archive.File)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "无法读取漫画页")
+		return
+	}
 	pages := make([]comicPage, len(files))
 	for index, file := range files {
 		pages[index] = comicPage{
@@ -811,8 +815,8 @@ func (a *app) handlePage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "书籍不存在")
 		return
 	}
-	if book.Format != "cbz" {
-		writeError(w, http.StatusBadRequest, "这不是漫画压缩包")
+	if book.Format != "cbz" && (book.Format != "epub" || !book.IsComic) {
+		writeError(w, http.StatusBadRequest, "这不是漫画书")
 		return
 	}
 	pageIndex, err := strconv.Atoi(r.PathValue("page"))
@@ -826,12 +830,23 @@ func (a *app) handlePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer archive.Close()
-	files := comicFiles(archive.File)
+	files, err := comicPageFiles(book, archive.File)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "无法读取漫画页")
+		return
+	}
 	if pageIndex >= len(files) {
 		writeError(w, http.StatusNotFound, "漫画页不存在")
 		return
 	}
 	serveZipFile(w, r, book, files[pageIndex], "private, no-store")
+}
+
+func comicPageFiles(book Book, files []*zip.File) ([]*zip.File, error) {
+	if book.Format == "epub" {
+		return epubComicFiles(files)
+	}
+	return comicFiles(files), nil
 }
 
 func serveZipFile(w http.ResponseWriter, r *http.Request, book Book, file *zip.File, cacheControl string) {
@@ -1030,7 +1045,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; img-src 'self' data: blob:; font-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; img-src 'self' data: blob:; font-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'")
 		next.ServeHTTP(w, r)
 	})
 }

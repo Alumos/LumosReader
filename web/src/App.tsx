@@ -170,6 +170,7 @@ function App() {
               setLoading(false);
             }
           }}><RefreshCw size={16} />重新扫描</button>
+          <div className="mobile-account"><AccountMenu onOpen={setPanel} /></div>
           <div className="mobile-tabs"><Navigation books={books} section={section} onChange={setSection} compact /></div>
         </header>
 
