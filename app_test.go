@@ -261,4 +261,13 @@ func TestFontUploadAndDownload(t *testing.T) {
 	if response.Code != http.StatusOK || response.Body.String() != fontData {
 		t.Fatalf("download status %d: %q", response.Code, response.Body.String())
 	}
+	if err := os.WriteFile(filepath.Join(fonts, "mounted.otf"), []byte("OTTOfont-data"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	list := httptest.NewRequest(http.MethodGet, "/api/fonts", nil)
+	response = httptest.NewRecorder()
+	a.routes().ServeHTTP(response, list)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "mounted.otf") {
+		t.Fatalf("mounted font was not discovered: %d %s", response.Code, response.Body.String())
+	}
 }
