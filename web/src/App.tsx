@@ -4,11 +4,13 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  CaseUpper,
   Folder,
   HardDrive,
   Library,
   LoaderCircle,
   LogIn,
+  Palette,
   Plus,
   PanelsTopLeft,
   RefreshCw,
@@ -21,7 +23,8 @@ import {
 } from "lucide-react";
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { BookCover } from "./Cover";
-import { applyAppTheme, loadAppTheme, Reader } from "./Reader";
+import { FontLibrary } from "./Fonts";
+import { Reader } from "./Reader";
 import { Book, Bookshelf, ReadingStats, ServerInfo, api, fileStem } from "./model";
 
 type Section =
@@ -29,7 +32,44 @@ type Section =
   | { kind: "recent" }
   | { kind: "collection"; shelfKind: Book["shelf_kind"] }
   | { kind: "shelf"; shelfKind: Book["shelf_kind"]; shelf: string; category?: string };
-type AccountPanel = "stats" | "server" | "shelves";
+type AccountPanel = "theme" | "fonts" | "stats" | "server" | "shelves";
+type AppTheme = { mode: "solid" | "gradient" | "eink"; accent: string; secondary: string };
+const defaultAppTheme: AppTheme = { mode: "solid", accent: "#2f6b50", secondary: "#a7cdb1" };
+const themePresets = [["睡莲", "#557f83", "#d7c8a7"], ["花园", "#6f9278", "#d6b58c"], ["黄昏", "#a45d4d", "#e0ad72"]] as const;
+
+function loadAppTheme(): AppTheme {
+  try {
+    const saved = JSON.parse(localStorage.getItem("lumos-app-theme") ?? "{}");
+    return {
+      mode: saved.mode === "gradient" || saved.mode === "eink" ? saved.mode : defaultAppTheme.mode,
+      accent: validHex(saved.accent) ? saved.accent : defaultAppTheme.accent,
+      secondary: validHex(saved.secondary) ? saved.secondary : defaultAppTheme.secondary,
+    };
+  } catch {
+    return defaultAppTheme;
+  }
+}
+
+function applyAppTheme(theme: AppTheme) {
+  const root = document.documentElement;
+  const eink = theme.mode === "eink";
+  const accent = eink ? "#000000" : theme.accent;
+  const secondary = eink ? "#000000" : theme.secondary;
+  const alpha = (hex: string, opacity: number) => {
+    const value = Number.parseInt(hex.slice(1), 16);
+    return `rgba(${value >> 16}, ${(value >> 8) & 255}, ${value & 255}, ${opacity})`;
+  };
+  root.dataset.appTheme = theme.mode;
+  root.style.setProperty("--green", accent);
+  root.style.setProperty("--green-soft", alpha(accent, eink ? .12 : .14));
+  root.style.setProperty("--theme-gradient", eink ? "#ffffff" : theme.mode === "gradient" ? `linear-gradient(120deg, ${alpha(accent, .2)}, ${alpha(secondary, .2)} 58%, #ffffff)` : "#f1f6f0");
+  root.style.setProperty("--app-bg", eink ? "#ffffff" : theme.mode === "gradient" ? `linear-gradient(120deg, ${alpha(accent, .1)}, ${alpha(secondary, .1)} 58%, #ffffff)` : "#f7f8f5");
+  root.style.setProperty("--ui-text", eink ? "#000000" : "#18201c");
+  root.style.setProperty("--border", eink ? "#000000" : "#e1e5df");
+  root.style.setProperty("--muted", eink ? "#444444" : "#707b74");
+}
+
+const validHex = (value: unknown): value is string => typeof value === "string" && /^#[\da-f]{6}$/i.test(value);
 
 function App() {
   const [theme, setTheme] = useState(loadAppTheme);
@@ -84,7 +124,7 @@ function App() {
 
   if (reading) {
     const collection = books.filter((book) => book.series && book.series === reading.series && book.shelf === reading.shelf && book.category === reading.category);
-    return <Reader book={reading} collection={collection} theme={theme} onTheme={setTheme} onBook={setReading} onClose={() => {
+    return <Reader book={reading} collection={collection} onBook={setReading} onClose={() => {
       setReading(undefined);
       loadBooks().catch(() => undefined);
     }} />;
@@ -168,7 +208,7 @@ function App() {
         </div>
       </main>
 
-      {panel && <UserPanel kind={panel} server={server} onClose={() => setPanel(undefined)} onSaved={loadBooks} />}
+      {panel && <UserPanel kind={panel} server={server} theme={theme} onTheme={setTheme} onClose={() => setPanel(undefined)} onSaved={loadBooks} />}
       {seriesOpen && <VolumePicker books={seriesOpen} onClose={() => setSeriesOpen(undefined)} onOpen={(book) => { setSeriesOpen(undefined); setReading(book); }} />}
     </div>
   );
@@ -213,6 +253,8 @@ function AccountMenu({ onOpen }: { onOpen: (panel: AccountPanel) => void }) {
   const [open, setOpen] = useState(false);
   return <div className="account-menu">
     {open && <div className="account-popover">
+      <button onClick={() => onOpen("theme")}><Palette size={16} />界面主题</button>
+      <button onClick={() => onOpen("fonts")}><CaseUpper size={16} />字体库</button>
       <button onClick={() => onOpen("stats")}><BarChart3 size={16} />阅读数据</button>
       <button onClick={() => onOpen("server")}><HardDrive size={16} />后端连接</button>
       <button onClick={() => onOpen("shelves")}><Settings size={16} />书架设置</button>
@@ -221,15 +263,29 @@ function AccountMenu({ onOpen }: { onOpen: (panel: AccountPanel) => void }) {
   </div>;
 }
 
-function UserPanel({ kind, server, onClose, onSaved }: { kind: AccountPanel; server?: ServerInfo; onClose: () => void; onSaved: () => Promise<void> }) {
-  const titles = { stats: ["阅读数据", "你的阅读足迹"], server: ["后端连接", "当前服务端"], shelves: ["书架设置", "扫描目录"] } as const;
+function UserPanel({ kind, server, theme, onTheme, onClose, onSaved }: { kind: AccountPanel; server?: ServerInfo; theme: AppTheme; onTheme: (theme: AppTheme) => void; onClose: () => void; onSaved: () => Promise<void> }) {
+  const titles = { theme: ["界面主题", "微光阅外观"], fonts: ["字体库", "本地字体管理"], stats: ["阅读数据", "你的阅读足迹"], server: ["后端连接", "当前服务端"], shelves: ["书架设置", "扫描目录"] } as const;
   return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <section className="user-panel" role="dialog" aria-modal="true" aria-label={titles[kind][0]}>
       <header><div><small>{titles[kind][0]}</small><h2>{titles[kind][1]}</h2></div><button aria-label="关闭" onClick={onClose}><X size={18} /></button></header>
+      {kind === "theme" && <ThemeSettings theme={theme} onTheme={onTheme} />}
+      {kind === "fonts" && <FontLibrary upload />}
       {kind === "stats" && <StatsPanel />}
       {kind === "server" && <ServerPanel server={server} />}
       {kind === "shelves" && <ShelvesPanel onSaved={onSaved} onClose={onClose} />}
     </section>
+  </div>;
+}
+
+function ThemeSettings({ theme, onTheme }: { theme: AppTheme; onTheme: (theme: AppTheme) => void }) {
+  const patch = (value: Partial<AppTheme>) => onTheme({ ...theme, ...value });
+  return <div className="theme-settings">
+    <label>界面主题<select value={theme.mode} onChange={(event) => patch({ mode: event.target.value as AppTheme["mode"] })}><option value="solid">浅色简约</option><option value="gradient">莫奈渐变</option><option value="eink">E-INK 黑白</option></select></label>
+    {theme.mode !== "eink" && <>
+      <div className="theme-presets"><span>莫奈取色</span><div>{themePresets.map(([name, accent, secondary]) => <button key={name} type="button" title={name} aria-label={`使用${name}配色`} style={{ background: `linear-gradient(135deg, ${accent}, ${secondary})` }} onClick={() => onTheme({ mode: "gradient", accent, secondary })} />)}</div></div>
+      <label className="color-field">主色<input aria-label="界面主色" type="color" value={theme.accent} onChange={(event) => patch({ accent: event.target.value })} /></label>
+      {theme.mode === "gradient" && <label className="color-field">渐变色<input aria-label="界面渐变色" type="color" value={theme.secondary} onChange={(event) => patch({ secondary: event.target.value })} /></label>}
+    </>}
   </div>;
 }
 
