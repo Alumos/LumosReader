@@ -24,10 +24,18 @@ val rustDirectory = rootProject.layout.projectDirectory.dir("rust")
 val generatedBindings = layout.buildDirectory.dir("generated/uniffi")
 
 val generateUniFfiBindings by tasks.registering(Exec::class) {
-    inputs.files(rustDirectory.file("src/lumos_core.udl"), rustDirectory.file("src/lib.rs"))
+    inputs.files(
+        rustDirectory.file("src/lumos_core.udl"),
+        rustDirectory.file("src/lib.rs"),
+        rustDirectory.file("uniffi.toml"),
+    )
     outputs.dir(generatedBindings)
     workingDir(rustDirectory)
-    commandLine("cargo", "run", "--quiet", "--bin", "uniffi-bindgen", "--", "generate", "src/lumos_core.udl", "--language", "kotlin", "--out-dir", generatedBindings.get().asFile.absolutePath)
+    commandLine(
+        "cargo", "run", "--quiet", "--bin", "uniffi-bindgen", "--",
+        "generate", "src/lumos_core.udl", "--language", "kotlin",
+        "--config", "uniffi.toml", "--out-dir", generatedBindings.get().asFile.absolutePath,
+    )
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {

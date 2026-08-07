@@ -57,19 +57,27 @@ class MainActivity : Activity() {
         data?.data?.let(::uploadFont)
     }
 
-    private fun showConnection(message: String = "") {
+    private fun showConnection(message: String = "", draftAddress: String? = null) {
         reset("connection")
         val mark = TextView(this).apply { text = "L"; textSize = 34f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); setBackgroundResource(xyz.alumos.lumosreader.design.R.drawable.lumos_button) }
         root.addView(mark, LinearLayout.LayoutParams(dp(58), dp(58)).apply { bottomMargin = dp(22) })
         root.addView(title("连接你的微光阅"))
         root.addView(body("只需填写服务端根地址。书籍保留在 NAS，进度会在设备之间同步。"), wrap(bottom = 24))
-        val address = input("http://nas.alumos.xyz:7767").apply {
-            setText(prefs.getString("address", ""))
+        val address = input("例如：http://192.168.1.100:7767").apply {
+            setText(draftAddress ?: prefs.getString("address", ""))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         root.addView(address, match(height = 52, bottom = 12))
         if (message.isNotBlank()) root.addView(error(message), wrap(bottom = 10))
-        root.addView(primary("连接服务器") { connect(address.text.toString(), null, false) }, match(height = 48))
+        root.addView(primary("连接服务器") {
+            val value = address.text.toString().trim()
+            if (value.isEmpty()) {
+                address.error = "请输入服务端地址"
+                address.requestFocus()
+            } else {
+                connect(value, null, false)
+            }
+        }, match(height = 48))
         root.addView(body("HTTP 仅建议用于可信局域网；公网地址请优先使用 HTTPS。"), wrap(top = 16))
     }
 
@@ -86,7 +94,7 @@ class MainActivity : Activity() {
                 }
             }.onFailure {
                 val prefix = if (automatic) "上次的服务器暂时无法连接：" else ""
-                showConnection(prefix + LumosSession.friendlyError(it))
+                showConnection(prefix + LumosSession.friendlyError(it), address)
             }
         }
     }

@@ -72,6 +72,14 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
 
+      - name: Verify native bridge
+        working-directory: clients/android
+        shell: bash
+        run: |
+          test -f core/src/main/jniLibs/arm64-v8a/liblumos_core.so
+          test -f core/src/main/jniLibs/armeabi-v7a/liblumos_core.so
+          grep -Fq 'return "lumos_core"' core/build/generated/uniffi/uniffi/lumos_core/lumos_core.kt
+
       - name: Compile Android
         working-directory: clients/android
         run: gradle --no-daemon :app:compileDebugKotlin --stacktrace

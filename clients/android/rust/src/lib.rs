@@ -18,6 +18,8 @@ pub enum LumosError {
     IncompatibleServer,
     #[error("登录状态已失效")]
     Unauthorized,
+    #[error("连接服务器超时")]
+    Timeout,
     #[error("无法连接服务器")]
     Network,
     #[error("服务器请求失败")]
@@ -362,7 +364,9 @@ impl ApiClient {
     }
 
     fn send(&self, request: RequestBuilder) -> Result<Response, LumosError> {
-        let response = request.send().map_err(|_| LumosError::Network)?;
+        let response = request.send().map_err(|error| {
+            if error.is_timeout() { LumosError::Timeout } else { LumosError::Network }
+        })?;
         if let Some(cookie) = response.headers().get(SET_COOKIE).and_then(|value| value.to_str().ok()) {
             if let Some(token) = cookie.strip_prefix("lumos_session=").and_then(|value| value.split(';').next()) {
                 *self.session.lock() = (!token.is_empty()).then(|| token.to_owned());
@@ -378,7 +382,15 @@ impl ApiClient {
 
 fn normalize_base_url(input: &str) -> Result<Url, LumosError> {
     let trimmed = input.trim().trim_end_matches('/');
-    let mut url = Url::parse(trimmed).map_err(|_| LumosError::InvalidAddress)?;
+    if trimmed.is_empty() {
+        return Err(LumosError::InvalidAddress);
+    }
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_owned()
+    } else {
+        format!("http://{trimmed}")
+    };
+    let mut url = Url::parse(&candidate).map_err(|_| LumosError::InvalidAddress)?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -402,6 +414,7 @@ mod tests {
     #[test]
     fn normalizes_root_address() {
         assert_eq!(normalize_base_url(" http://nas.example:7767/ ").unwrap().as_str(), "http://nas.example:7767/");
+        assert_eq!(normalize_base_url("nas.example:7767").unwrap().as_str(), "http://nas.example:7767/");
     }
 
     #[test]

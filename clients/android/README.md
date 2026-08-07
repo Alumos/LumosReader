@@ -11,7 +11,7 @@
 - `reader-epub`：仅在 EPUB/MOBI/AZW3 阅读期存在的专用 WebView。
 - `rust`：API v4、会话 Cookie、Range、数据模型和错误归一化。
 
-服务端地址必须是根地址，例如 `http://nas.alumos.xyz:7767`。客户端会先请求 `/api/server` 并只接受 API v4。
+服务端地址必须是根地址，例如 `http://192.168.1.100:7767`。省略协议时默认使用 HTTP；客户端会先请求 `/api/server` 并只接受 API v4。
 会话 Cookie 使用 Android Keystore 的 AES-GCM 密钥加密保存；API 相对地址在 Rust 层强制保持同源。
 
 ## 本地构建

@@ -31,7 +31,10 @@ object LumosSession {
 
     fun connect(address: String, cookie: String?, callback: (Result<Pair<ServerInfo, SessionState>>) -> Unit) {
         task(callback) {
-            createClient(address, cookie).also { client = it }.let { it.discover() to it.session() }
+            val candidate = createClient(address, cookie)
+            val result = candidate.discover() to candidate.session()
+            client = candidate
+            result
         }
     }
 
@@ -94,11 +97,15 @@ object LumosSession {
     }
 
     fun friendlyError(error: Throwable): String = when (error) {
+        is UnsatisfiedLinkError -> "客户端核心组件加载失败，请重新安装应用"
         is LumosException.InvalidAddress -> "请输入完整的 HTTP 或 HTTPS 服务端根地址"
         is LumosException.IncompatibleServer -> "服务端 API 版本不兼容，需要 API v4"
         is LumosException.Unauthorized -> "登录已失效，请重新输入密码"
+        is LumosException.Timeout -> "连接超时，请检查服务器地址、端口和网络"
         is LumosException.Network -> "无法连接服务器，请检查地址和网络"
         is LumosException.Server -> "服务端返回错误"
+        is LumosException.InvalidResponse -> "服务端响应无法识别，请确认服务端版本"
+        is LumosException.Io -> "读取本地数据失败"
         else -> error.message ?: "发生未知错误"
     }
 }
