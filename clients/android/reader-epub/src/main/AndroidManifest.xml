@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".WebBookActivity"
+            android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:theme="@style/Theme.Lumos.Reader" />
+    </application>
+</manifest>

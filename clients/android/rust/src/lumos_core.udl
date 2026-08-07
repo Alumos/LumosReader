@@ -1,0 +1,121 @@
+namespace lumos_core {
+    [Throws=LumosError]
+    ApiClient create_client(string base_url, string? session_cookie);
+};
+
+[Error]
+enum LumosError {
+    "InvalidAddress",
+    "IncompatibleServer",
+    "Unauthorized",
+    "Network",
+    "Server",
+    "InvalidResponse",
+    "Io",
+};
+
+dictionary ServerInfo {
+    string name;
+    string version;
+    u32 api_version;
+    boolean auth_required;
+    sequence<string> formats;
+};
+
+dictionary SessionState {
+    boolean auth_required;
+    boolean authenticated;
+};
+
+dictionary Book {
+    string id;
+    string title;
+    string file_name;
+    string author;
+    string format;
+    string shelf;
+    string shelf_kind;
+    string category;
+    string series;
+    boolean is_comic;
+    boolean fixed_layout;
+    string page_direction;
+    u64 size;
+    string modified;
+    double progress;
+    string locator;
+    string progress_time;
+    string cover_url;
+};
+
+dictionary ComicPage {
+    u32 index;
+    string name;
+    string url;
+};
+
+dictionary Progress {
+    string book_id;
+    double position;
+    string locator;
+    string updated_at;
+};
+
+dictionary ServerFont {
+    string name;
+    string url;
+    u64 size;
+};
+
+dictionary Bookshelf {
+    string name;
+    string path;
+    string kind;
+};
+
+dictionary ShelvesState {
+    sequence<Bookshelf> shelves;
+    sequence<string> directories;
+    boolean automatic;
+};
+
+dictionary ReadingDay {
+    string date;
+    u32 seconds;
+};
+
+dictionary BookReading {
+    string book_id;
+    string title;
+    u32 seconds;
+};
+
+dictionary ReadingStats {
+    u64 total_seconds;
+    u64 today_seconds;
+    sequence<ReadingDay> days;
+    sequence<BookReading> books;
+};
+
+interface ApiClient {
+    string base_url();
+    string? session_cookie();
+    [Throws=LumosError] ServerInfo discover();
+    [Throws=LumosError] SessionState session();
+    [Throws=LumosError] SessionState login(string password);
+    [Throws=LumosError] void logout();
+    [Throws=LumosError] sequence<Book> books();
+    [Throws=LumosError] void scan();
+    [Throws=LumosError] sequence<ComicPage> comic_pages(string book_id);
+    [Throws=LumosError] Progress progress(string book_id);
+    [Throws=LumosError] Progress save_progress(string book_id, double position, string locator);
+    [Throws=LumosError] void add_reading_time(string book_id, u32 seconds);
+    [Throws=LumosError] ReadingStats stats();
+    [Throws=LumosError] sequence<ServerFont> fonts();
+    [Throws=LumosError] void upload_font(string file_path, string file_name);
+    [Throws=LumosError] ShelvesState shelves();
+    [Throws=LumosError] void save_shelves(sequence<Bookshelf> shelves);
+    [Throws=LumosError] bytes get_bytes(string relative_url);
+    [Throws=LumosError] bytes get_range(string relative_url, u64 start, u64 end_inclusive);
+    [Throws=LumosError] void download(string relative_url, string destination);
+};

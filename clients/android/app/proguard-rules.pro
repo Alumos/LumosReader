@@ -1,0 +1,3 @@
+-keep class uniffi.lumos_core.** { *; }
+-keep class com.sun.jna.** { *; }
+-dontwarn com.sun.jna.**

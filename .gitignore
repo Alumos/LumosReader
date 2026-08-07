@@ -4,5 +4,12 @@
 /library/
 /web/node_modules/
 /web/dist/
+/clients/android/.gradle/
+/clients/android/**/build/
+/clients/android/local.properties
+/clients/android/.cxx/
+/clients/android/rust/target/
+/clients/android/**/*.jks
+/clients/android/**/*.keystore
 !.gitkeep
 .DS_Store

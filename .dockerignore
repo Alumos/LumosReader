@@ -13,4 +13,5 @@ scripts
 testdata
 web/node_modules
 web/dist
+clients/android
 .DS_Store

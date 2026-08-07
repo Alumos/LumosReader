@@ -1,0 +1,18 @@
+<resources>
+    <style name="Theme.Lumos" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/lumos_canvas</item>
+        <item name="android:navigationBarColor">@color/lumos_canvas</item>
+        <item name="android:windowBackground">@color/lumos_canvas</item>
+        <item name="android:colorAccent">@color/lumos_leaf</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+    <style name="Theme.Lumos.Reader" parent="Theme.Lumos">
+        <item name="android:statusBarColor">@color/lumos_eink_canvas</item>
+        <item name="android:navigationBarColor">@color/lumos_eink_canvas</item>
+        <item name="android:windowBackground">@color/lumos_eink_canvas</item>
+        <item name="android:windowDisablePreview">true</item>
+    </style>
+</resources>

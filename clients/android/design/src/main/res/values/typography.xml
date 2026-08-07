@@ -1,0 +1,17 @@
+<resources>
+    <style name="TextAppearance.Lumos.Title">
+        <item name="android:textColor">@color/lumos_ink</item>
+        <item name="android:textSize">24sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+    <style name="TextAppearance.Lumos.Heading">
+        <item name="android:textColor">@color/lumos_ink</item>
+        <item name="android:textSize">17sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+    <style name="TextAppearance.Lumos.Body">
+        <item name="android:textColor">@color/lumos_ink_secondary</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+</resources>

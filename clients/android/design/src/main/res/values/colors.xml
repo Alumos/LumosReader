@@ -1,0 +1,12 @@
+<resources>
+    <color name="lumos_ink">#26342B</color>
+    <color name="lumos_ink_secondary">#627067</color>
+    <color name="lumos_canvas">#F8FAF7</color>
+    <color name="lumos_surface">#FFFFFF</color>
+    <color name="lumos_leaf">#376A4B</color>
+    <color name="lumos_leaf_soft">#E4F0E7</color>
+    <color name="lumos_line">#DCE4DD</color>
+    <color name="lumos_error">#A63D40</color>
+    <color name="lumos_eink_ink">#000000</color>
+    <color name="lumos_eink_canvas">#FFFFFF</color>
+</resources>

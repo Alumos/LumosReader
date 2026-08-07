@@ -1,0 +1,11 @@
+<resources>
+    <dimen name="lumos_space_1">4dp</dimen>
+    <dimen name="lumos_space_2">8dp</dimen>
+    <dimen name="lumos_space_3">12dp</dimen>
+    <dimen name="lumos_space_4">16dp</dimen>
+    <dimen name="lumos_space_5">24dp</dimen>
+    <dimen name="lumos_radius_small">8dp</dimen>
+    <dimen name="lumos_radius">14dp</dimen>
+    <dimen name="lumos_touch">48dp</dimen>
+    <dimen name="lumos_content_max">920dp</dimen>
+</resources>

@@ -52,6 +52,18 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!books.length || reading) return;
+    const requested = new URLSearchParams(window.location.search).get("open");
+    const book = requested ? books.find((item) => item.id === requested) : undefined;
+    if (book) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("open");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      setReading(book);
+    }
+  }, [books, reading]);
+
+  useEffect(() => {
     Promise.all([
       api<ServerInfo>("/api/server"),
       api<{ authenticated: boolean }>("/api/session"),
