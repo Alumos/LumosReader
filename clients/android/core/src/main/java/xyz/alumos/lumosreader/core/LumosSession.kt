@@ -29,6 +29,9 @@ object LumosSession {
     @Volatile
     var selectedBook: Book? = null
 
+    @Volatile
+    var selectedCollection: List<Book> = emptyList()
+
     fun connect(address: String, cookie: String?, callback: (Result<Pair<ServerInfo, SessionState>>) -> Unit) {
         task(callback) {
             val candidate = createClient(address, cookie)
@@ -68,6 +71,26 @@ object LumosSession {
 
     fun download(path: String, destination: String, callback: (Result<Unit>) -> Unit) =
         withClient(callback) { it.download(path, destination) }
+
+    fun bytesWithProgress(path: String, size: Long, progress: (Int) -> Unit, callback: (Result<ByteArray>) -> Unit) {
+        val current = client ?: return callback(Result.failure(IllegalStateException("尚未连接服务器")))
+        io.execute {
+            val result = runCatching {
+                if (size <= 0) return@runCatching current.getBytes(path)
+                val output = java.io.ByteArrayOutputStream(size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                var start = 0L
+                while (start < size) {
+                    val end = minOf(size - 1, start + 256L * 1024L - 1)
+                    output.write(current.getRange(path, start.toULong(), end.toULong()))
+                    start = end + 1
+                    val percent = (start * 100 / size).toInt().coerceIn(0, 100)
+                    main.post { progress(percent) }
+                }
+                output.toByteArray()
+            }
+            main.post { callback(result) }
+        }
+    }
 
     fun saveProgress(bookId: String, position: Double, locator: String = "", callback: ((Result<Unit>) -> Unit)? = null) {
         val client = client ?: return

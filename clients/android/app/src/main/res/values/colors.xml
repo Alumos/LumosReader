@@ -1,0 +1,5 @@
+<resources>
+    <color name="lumos_canvas">#F8FAF7</color>
+    <color name="lumos_leaf">#376A4B</color>
+    <color name="lumos_eink_canvas">#FFFFFF</color>
+</resources>

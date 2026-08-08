@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -14,7 +15,20 @@ class SecureCookieStore(context: Context) {
     private val prefs = context.getSharedPreferences("lumos_secure", Context.MODE_PRIVATE)
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
+    @Synchronized
     fun write(value: String) {
+        runCatching { encryptAndStore(value) }.onFailure { firstError ->
+            // Android may permanently invalidate a Keystore key after the device lock or
+            // biometric configuration changes. A stale session must never crash login.
+            resetStorage()
+            runCatching { encryptAndStore(value) }.onFailure { retryError ->
+                Log.e(TAG, "Unable to persist the authenticated session", retryError)
+                Log.w(TAG, "Initial session persistence failure", firstError)
+            }
+        }
+    }
+
+    private fun encryptAndStore(value: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }
         val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
         prefs.edit()
@@ -23,15 +37,28 @@ class SecureCookieStore(context: Context) {
             .apply()
     }
 
+    @Synchronized
     fun read(): String? = runCatching {
         val encrypted = prefs.getString("cookie", null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
         val iv = prefs.getString("iv", null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
         val key = keyStore.getKey(ALIAS, null) as? SecretKey ?: return null
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv)) }
         cipher.doFinal(encrypted).toString(Charsets.UTF_8)
-    }.getOrNull()
+    }.getOrElse {
+        Log.w(TAG, "Discarding an unreadable saved session", it)
+        resetStorage()
+        null
+    }
 
+    @Synchronized
     fun clear() { prefs.edit().clear().apply() }
+
+    private fun resetStorage() {
+        prefs.edit().clear().commit()
+        runCatching {
+            if (keyStore.containsAlias(ALIAS)) keyStore.deleteEntry(ALIAS)
+        }.onFailure { Log.w(TAG, "Unable to remove the invalidated session key", it) }
+    }
 
     private fun key(): SecretKey {
         (keyStore.getKey(ALIAS, null) as? SecretKey)?.let { return it }
@@ -48,5 +75,6 @@ class SecureCookieStore(context: Context) {
     companion object {
         private const val ALIAS = "lumos_session_key"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private const val TAG = "SecureCookieStore"
     }
 }

@@ -114,12 +114,20 @@ pub struct Bookshelf {
 
 #[derive(Clone, Deserialize)]
 pub struct ShelvesState {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub shelves: Vec<Bookshelf>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub directories: Vec<String>,
     #[serde(default)]
     pub automatic: bool,
+}
+
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Clone, Deserialize)]
@@ -140,9 +148,9 @@ pub struct BookReading {
 pub struct ReadingStats {
     pub total_seconds: u64,
     pub today_seconds: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub days: Vec<ReadingDay>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub books: Vec<BookReading>,
 }
 
@@ -316,6 +324,9 @@ impl ApiClient {
         }
         let request = self.request(Method::GET, &relative_url)?.header(RANGE, format!("bytes={start}-{end_inclusive}"));
         let response = self.send(request)?;
+        if response.status() != StatusCode::PARTIAL_CONTENT {
+            return Err(LumosError::InvalidResponse);
+        }
         response.bytes().map(|bytes| bytes.to_vec()).map_err(|_| LumosError::Io)
     }
 

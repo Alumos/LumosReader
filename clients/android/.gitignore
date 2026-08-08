@@ -4,6 +4,8 @@
 local.properties
 .cxx/
 rust/target/
+rust/core/
+/.idea/
 **/*.jks
 **/*.keystore
 core/src/main/jniLibs/

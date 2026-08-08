@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "LumosReaderAndroid"
-include(":app", ":core", ":design", ":reader-native", ":reader-epub")
+include(":app", ":core", ":reader-native")
