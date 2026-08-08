@@ -49,6 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import xyz.alumos.lumosreader.core.LumosSession
 import uniffi.lumos_core.Book
 import uniffi.lumos_core.Bookshelf
@@ -170,7 +174,15 @@ class MainActivity : ComponentActivity() {
                     (query.isBlank() || "${book.title} ${book.author} ${book.series}".contains(query.trim(), true))
             }
         }
-        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+        val focusManager = LocalFocusManager.current
+        BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Final)
+                    if (event.type == PointerEventType.Release && event.changes.none { it.isConsumed }) focusManager.clearFocus()
+                }
+            }
+        }) {
             val wide = maxWidth >= 720.dp
             val controls: @Composable ColumnScope.() -> Unit = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -182,7 +194,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(14.dp))
                 AdaptiveDropdown("书架", shelf, shelfNames) { shelf = it; category = "全部分类" }
                 Spacer(Modifier.height(10.dp)); AdaptiveDropdown("分类", category, categoryNames) { category = it }
-                Spacer(Modifier.height(10.dp)); OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().height(48.dp), label = { Text("搜索") }, singleLine = true, shape = LumosShape)
+                Spacer(Modifier.height(10.dp)); OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().heightIn(min = 52.dp), placeholder = { Text("搜索") }, singleLine = true, shape = LumosShape, keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }))
                 Spacer(Modifier.height(10.dp)); Text("${presentWorks(filtered).size} 部作品", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (wide) Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {

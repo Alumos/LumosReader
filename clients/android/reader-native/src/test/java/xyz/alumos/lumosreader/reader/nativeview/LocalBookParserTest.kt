@@ -6,6 +6,8 @@ import org.junit.Test
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 class LocalBookParserTest {
     @Test fun parsesEpubSpineAndRelativePaths() {
@@ -18,8 +20,10 @@ class LocalBookParserTest {
             entry("OPS/text/two.xhtml", "<html><head><title>第二章</title></head><body><p>结尾</p></body></html>")
         }
         val parsed = LocalBookParser.parse(file, "epub")
-        assertEquals(listOf("第一章", "第二章"), parsed.chapters.map(NativeChapter::title))
-        assertTrue(parsed.chapters[0].text.contains("你好&世界"))
+        assertTrue(parsed.isLazy)
+        assertEquals("第一章", parsed.chapterAt(0).title)
+        assertEquals("第二章", parsed.chapterAt(1).title)
+        assertTrue(parsed.chapterAt(0).text.contains("你好&世界"))
         file.delete()
     }
 
@@ -32,7 +36,7 @@ class LocalBookParserTest {
             entry("OPS/page.xhtml", "<html><body><img src=\"images/page.jpg\"/></body></html>".toByteArray())
             entry("OPS/images/page.jpg", byteArrayOf(1, 2, 3, 4))
         }
-        val entry = LocalBookParser.parse(file, "epub").chapters.single().imageEntry
+        val entry = LocalBookParser.parse(file, "epub").chapterAt(0).imageEntry
         assertEquals(4, LocalBookParser.image(file, requireNotNull(entry)).size)
         file.delete()
     }
@@ -57,5 +61,26 @@ class LocalBookParserTest {
         val error = runCatching { LocalBookParser.parse(file, "docx") }.exceptionOrNull()
         assertTrue(error?.message.orEmpty().contains("暂不支持"))
         file.delete()
+    }
+
+    @Test fun lazyDocumentCoalescesConcurrentReadsOfTheSameChapter() {
+        val loads = AtomicInteger()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val document = NativeDocument(listOf(NativeChapter("第一章", "")), chapterLoader = {
+            loads.incrementAndGet()
+            started.countDown()
+            release.await()
+            NativeChapter("第一章", "正文")
+        })
+        val results = arrayOfNulls<NativeChapter>(2)
+        val first = Thread { results[0] = document.chapterAt(0) }.apply { start() }
+        started.await()
+        val second = Thread { results[1] = document.chapterAt(0) }.apply { start() }
+        release.countDown()
+        first.join(); second.join()
+        assertEquals(1, loads.get())
+        assertEquals("正文", results[0]?.text)
+        assertEquals(results[0], results[1])
     }
 }

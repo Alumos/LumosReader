@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 data class LocalFont(val name: String, val size: Long, val uri: Uri)
 
@@ -86,6 +87,7 @@ class FontStorage(private val context: Context) {
 
 class ReaderCache(private val context: Context) {
     private val prefs = context.getSharedPreferences("lumos_reader", Context.MODE_PRIVATE)
+    private val rangeLocks = ConcurrentHashMap<String, Any>()
     val directory = File(context.cacheDir, "reader").apply { mkdirs() }
     var limitBytes: Long
         get() = prefs.getLong("cache_limit", 500L * MB)
@@ -94,21 +96,60 @@ class ReaderCache(private val context: Context) {
     fun sizeBytes(): Long = context.cacheDir.walkTopDown().filter(File::isFile).sumOf(File::length)
     private fun managedSizeBytes(): Long = directory.walkTopDown().filter(File::isFile).sumOf(File::length)
     fun file(bookId: String, extension: String): File = File(directory, "${bookId.filter(Char::isLetterOrDigit)}.$extension")
-    @Synchronized fun range(bookId: String, start: Long, endInclusive: Long, loader: () -> ByteArray): ByteArray {
+    fun range(bookId: String, start: Long, endInclusive: Long, loader: () -> ByteArray): ByteArray {
         val ranges = File(directory, "${bookId.filter(Char::isLetterOrDigit)}.ranges").apply { mkdirs() }
         val expected = endInclusive - start + 1
         val target = File(ranges, "$start-$endInclusive.bin")
-        if (target.isFile && target.length() == expected) { touch(target); return target.readBytes() }
-        val bytes = loader()
-        require(bytes.size.toLong() == expected) { "Range 响应长度无效" }
-        val part = File(ranges, "${target.name}.part")
-        part.delete(); part.writeBytes(bytes); target.delete()
-        check(part.renameTo(target)) { "无法保存流式缓存" }
-        touch(target); trim(); return bytes
+        val key = target.absolutePath
+        // Locks live only for this ReaderCache instance. Keeping them avoids a
+        // remove/recreate race while another thread is waiting for the same block.
+        // ConcurrentHashMap.computeIfAbsent requires Android 7; retain API 23.
+        val candidate = Any()
+        val lock = rangeLocks.putIfAbsent(key, candidate) ?: candidate
+        return synchronized(lock) {
+            if (target.isFile && target.length() == expected) { touch(target); return@synchronized target.readBytes() }
+            val bytes = loader()
+            require(bytes.size.toLong() == expected) { "Range 响应长度无效" }
+            val part = File(ranges, "${target.name}.part")
+            part.delete(); part.writeBytes(bytes); target.delete()
+            check(part.renameTo(target)) { "无法保存流式缓存" }
+            // Avoid walking the entire cache on every streamed block. The cache
+            // is trimmed when reading closes and whenever its limit changes.
+            touch(target); bytes
+        }
+    }
+
+    /**
+     * Serves arbitrary EPUB ZIP reads from aligned blocks. ZIP metadata causes many
+     * tiny adjacent reads; grouping them removes most HTTP round trips and makes
+     * subsequent opens fully cache-backed without downloading the whole book.
+     */
+    fun blockedRange(
+        bookId: String,
+        fileSize: Long,
+        start: Long,
+        endInclusive: Long,
+        loader: (Long, Long) -> ByteArray,
+    ): ByteArray {
+        require(start >= 0 && endInclusive >= start && endInclusive < fileSize)
+        val requestedSize = endInclusive - start + 1
+        require(requestedSize <= Int.MAX_VALUE) { "Range 请求过大" }
+        val output = java.io.ByteArrayOutputStream(requestedSize.toInt())
+        var position = start
+        while (position <= endInclusive) {
+            val blockStart = position / RANGE_BLOCK_BYTES * RANGE_BLOCK_BYTES
+            val blockEnd = minOf(fileSize - 1, blockStart + RANGE_BLOCK_BYTES - 1)
+            val block = range(bookId, blockStart, blockEnd) { loader(blockStart, blockEnd) }
+            val from = (position - blockStart).toInt()
+            val through = minOf(blockEnd, endInclusive)
+            output.write(block, from, (through - position + 1).toInt())
+            position = through + 1
+        }
+        return output.toByteArray()
     }
     fun touch(file: File) { file.setLastModified(System.currentTimeMillis()) }
     fun clear(): Boolean = context.cacheDir.listFiles()?.map { it.deleteRecursively() }?.all { it } != false
-    fun trim() {
+    @Synchronized fun trim() {
         var total = managedSizeBytes()
         directory.walkTopDown().filter(File::isFile).sortedBy(File::lastModified).forEach {
             if (total <= limitBytes) return
@@ -117,5 +158,8 @@ class ReaderCache(private val context: Context) {
         }
     }
 
-    companion object { const val MB = 1024L * 1024L }
+    companion object {
+        const val MB = 1024L * 1024L
+        private const val RANGE_BLOCK_BYTES = 512L * 1024L
+    }
 }

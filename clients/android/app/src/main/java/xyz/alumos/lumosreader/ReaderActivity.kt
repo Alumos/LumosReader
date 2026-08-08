@@ -23,6 +23,8 @@ import android.widget.TextView
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -40,6 +42,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import xyz.alumos.lumosreader.core.LumosSession
@@ -91,7 +98,10 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
     private var chapterReverse by mutableStateOf(false)
     private var styleAdvanced by mutableStateOf(false)
     private var templateNameDraft by mutableStateOf("")
+    private var templateRevision by mutableIntStateOf(0)
+    private var deleteTemplateName by mutableStateOf<String?>(null)
     private var catalogKind by mutableStateOf(CatalogKind.CHAPTERS)
+    private val textChapterLoading = mutableSetOf<Int>()
 
     private enum class ReaderPanel { CHAPTERS, STYLE }
     private enum class CatalogKind { VOLUMES, CHAPTERS }
@@ -113,6 +123,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
 
     private fun toggleChrome() { composeChrome = !composeChrome; eink.onMenu(stage) }
 
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
     @Composable
     private fun ReaderComposeShell() {
         val dark = settings.background == "black" && !einkMode
@@ -121,11 +132,32 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         LumosTheme(einkMode, dark) {
             Box(Modifier.fillMaxSize().background(background).safeDrawingPadding()) {
                 AndroidView(factory = { stage }, modifier = Modifier.fillMaxSize())
-                Text(composeStatus, Modifier.align(Alignment.BottomEnd).padding(9.dp), color = foreground, style = MaterialTheme.typography.labelSmall)
+                Text(
+                    composeStatus,
+                    Modifier.align(Alignment.BottomEnd).fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                    color = foreground,
+                    maxLines = 2,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    style = MaterialTheme.typography.labelSmall,
+                )
                 if (composeChrome) Surface(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp), shape = LumosShape, border = lumosBorder(einkMode), shadowElevation = if (einkMode) 0.dp else 8.dp, color = if (dark) ComposeColor(0xFF202320) else ComposeColor.White) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(book.title, color = foreground, maxLines = 1, style = MaterialTheme.typography.titleMedium)
-                        Slider(value = composeProgress.toFloat(), onValueChange = { composeProgress = it.toDouble(); seekTo(it.toDouble()) }, onValueChangeFinished = ::saveCurrentProgress)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(composeStatus, Modifier.weight(1f), maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = foreground)
+                            Text("${(composeProgress * 100).toInt().coerceIn(0, 100)}%", style = MaterialTheme.typography.labelMedium, color = foreground)
+                        }
+                        val progressInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        Slider(
+                            value = composeProgress.toFloat(),
+                            onValueChange = { composeProgress = it.toDouble(); seekTo(it.toDouble()) },
+                            onValueChangeFinished = ::saveCurrentProgress,
+                            modifier = Modifier.fillMaxWidth(.82f).height(26.dp).align(Alignment.CenterHorizontally),
+                            interactionSource = progressInteraction,
+                            thumb = { androidx.compose.material3.SliderDefaults.Thumb(progressInteraction, Modifier.size(4.dp, 18.dp)) },
+                            track = { androidx.compose.material3.SliderDefaults.Track(it, Modifier.height(2.dp)) },
+                        )
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             Button({ readerPanel = ReaderPanel.CHAPTERS; composeChrome = false }, Modifier.weight(1f).height(46.dp), shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("章节与卷册") }
                             Button({ readerPanel = ReaderPanel.STYLE; styleAdvanced = false; composeChrome = false }, Modifier.weight(1f).height(46.dp), enabled = textView?.visibility == View.VISIBLE, shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("样式排版") }
@@ -171,6 +203,13 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         val ordered = if (chapterReverse) source.asReversed() else source
         val pages = ((ordered.size + size - 1) / size).coerceAtLeast(1)
         chapterPage = chapterPage.coerceIn(0, pages - 1)
+        var pageDraft by remember(chapterPage, pages) { mutableStateOf((chapterPage + 1).toString()) }
+        val keyboard = LocalSoftwareKeyboardController.current
+        fun jumpToDraft() {
+            chapterPage = ((pageDraft.toIntOrNull() ?: chapterPage + 1) - 1).coerceIn(0, pages - 1)
+            pageDraft = (chapterPage + 1).toString()
+            keyboard?.hide()
+        }
         ReaderPanelFrame("章节与卷册", modifier) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 androidx.compose.material3.FilterChip(catalogKind == CatalogKind.CHAPTERS, { catalogKind = CatalogKind.CHAPTERS; chapterPage = 0 }, { Text("章节 · ${chapters.size}") }, Modifier.weight(1f), border = lumosBorder(einkMode), colors = lumosFilterChipColors(einkMode))
@@ -178,14 +217,31 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
             }
             Text(if (catalogKind == CatalogKind.CHAPTERS) "当前文件内部章节" else "当前作品目录下的独立卷册", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                androidx.compose.material3.FilterChip(chapterReverse, { chapterReverse = !chapterReverse; chapterPage = 0 }, { Text(if (chapterReverse) "倒序" else "正序") }, border = lumosBorder(einkMode), colors = lumosFilterChipColors(einkMode))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.FilterChip(chapterReverse, { chapterReverse = !chapterReverse; chapterPage = 0 }, { Text(if (chapterReverse) "倒序" else "正序") }, Modifier.weight(1f).height(44.dp), shape = LumosShape, border = lumosBorder(einkMode), colors = lumosFilterChipColors(einkMode))
                 androidx.compose.material3.OutlinedButton({
                     val current = if (catalogKind == CatalogKind.CHAPTERS) chapter else volumeBooks.indexOfFirst { it.id == book.id }.coerceAtLeast(0)
                     val position = if (chapterReverse) source.lastIndex - current else current
                     chapterPage = (position / size).coerceAtLeast(0)
-                }, shape = LumosShape, border = lumosBorder(einkMode), colors = lumosOutlinedButtonColors(einkMode)) { Text(if (catalogKind == CatalogKind.CHAPTERS) "定位此章节" else "定位此卷") }
-                Spacer(Modifier.weight(1f)); Text("第 ${chapterPage + 1}/$pages 页", modifier = Modifier.align(Alignment.CenterVertically))
+                }, Modifier.weight(1f).height(44.dp), shape = LumosShape, border = lumosBorder(einkMode), colors = lumosOutlinedButtonColors(einkMode), contentPadding = PaddingValues(horizontal = 14.dp)) { Text(if (catalogKind == CatalogKind.CHAPTERS) "定位此章节" else "定位此卷") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                Text("第")
+                BasicTextField(
+                    pageDraft, { pageDraft = it.filter(Char::isDigit).take(4) },
+                    Modifier.width(48.dp).height(32.dp), singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(textAlign = androidx.compose.ui.text.style.TextAlign.Center),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { jumpToDraft() }),
+                    decorationBox = { input ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { input() }
+                            androidx.compose.material3.HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.onSurface)
+                        }
+                    },
+                )
+                Text("/$pages 页")
             }
             Spacer(Modifier.height(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -216,13 +272,25 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         if (styleAdvanced) AdvancedStyleContent() else BasicStyleContent()
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun ColumnScope.BasicStyleContent() {
-        val templates = remember(settings.templateName, settingsStore.templates()) { builtInTemplates().take(3) + settingsStore.templates().take(3) }
+        val customTemplates = remember(templateRevision) { settingsStore.templates().take(3) }
+        val templates = builtInTemplates().take(3).map { Triple(it.first, it.second, false) } +
+            customTemplates.map { Triple(it.first, it.second, true) }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("排版模板", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                templates.forEach { (name, value) -> androidx.compose.material3.FilterChip(settings.templateName == name, { settings = value.copy(templateName = name); applyAndSave() }, { Text(name, maxLines = 1) }, border = lumosBorder(einkMode), colors = lumosFilterChipColors(einkMode)) }
+                templates.forEach { (name, value, custom) ->
+                    Surface(
+                        Modifier.height(44.dp).combinedClickable(
+                            onClick = { settings = value.copy(templateName = name); applyAndSave() },
+                            onLongClick = { if (custom) deleteTemplateName = name },
+                        ),
+                        shape = LumosShape, border = lumosBorder(einkMode),
+                        color = if (settings.templateName == name) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
+                    ) { Box(Modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) { Text(name, maxLines = 1) } }
+                }
             }
             ValueSlider("正文字号", settings.fontSize.toFloat(), 12f..28f, "${settings.fontSize} sp") { settings = settings.copy(fontSize = it.toInt()); applyAndSave() }
             Text("阅读背景", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
@@ -234,10 +302,23 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
             Text("自定义模板", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 androidx.compose.material3.OutlinedTextField(templateNameDraft, { templateNameDraft = it }, Modifier.weight(1f).height(56.dp), label = { Text("新模板名称") }, singleLine = true, shape = LumosShape)
-                androidx.compose.material3.Button({ val name = templateNameDraft.trim(); if (name.isNotEmpty() && settingsStore.templates().size < 3) { settingsStore.saveTemplate(name, settings); settings = settings.copy(templateName = name); templateNameDraft = "" } }, Modifier.width(96.dp).height(56.dp), enabled = settingsStore.templates().size < 3, shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("保存") }
+                androidx.compose.material3.Button({ val name = templateNameDraft.trim(); if (name.isNotEmpty() && customTemplates.size < 3) { settingsStore.saveTemplate(name, settings); settings = settings.copy(templateName = name); settingsStore.save(settings); templateNameDraft = ""; templateRevision++ } }, Modifier.width(96.dp).height(56.dp), enabled = customTemplates.size < 3, shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("保存") }
             }
         }
         Spacer(Modifier.height(12.dp)); androidx.compose.material3.Button({ styleAdvanced = true }, Modifier.fillMaxWidth().height(48.dp), shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("更多设置") }
+        deleteTemplateName?.let { name ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { deleteTemplateName = null },
+                title = { Text("删除排版模板") }, text = { Text("确定删除“$name”吗？") },
+                confirmButton = { androidx.compose.material3.TextButton({
+                    settingsStore.deleteTemplate(name)
+                    if (settings.templateName == name) { settings = builtInTemplates().first().second; applyAndSave() }
+                    deleteTemplateName = null; templateRevision++
+                }) { Text("删除") } },
+                dismissButton = { androidx.compose.material3.TextButton({ deleteTemplateName = null }) { Text("取消") } },
+                shape = LumosShape,
+            )
+        }
     }
 
     @Composable
@@ -327,7 +408,9 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         else if (book.format.equals("epub", ignoreCase = true) && book.size.toLong() > 0) {
             LumosSession.task({ result -> result.onSuccess { loaded -> document = loaded; seekTo(book.progress) }.onFailure { downloadLocal() } }) {
                 LocalBookParser.parseRemoteEpub(book.size.toLong()) { start, end ->
-                    cache.range(book.id, start, end) { LumosSession.rangeBlocking("/api/books/${book.id}/content", start, end) }
+                    cache.blockedRange(book.id, book.size.toLong(), start, end) { blockStart, blockEnd ->
+                        LumosSession.rangeBlocking("/api/books/${book.id}/content", blockStart, blockEnd)
+                    }
                 }
             }
         } else downloadLocal()
@@ -356,6 +439,19 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         } else {
             documentImageView?.visibility = View.GONE; textView?.visibility = View.VISIBLE
             textView?.setChapter(item.title, item.text, fraction)
+            preloadTextAround(doc, requestedChapter)
+        }
+    }
+
+    /** Preloads only adjacent text chapters after the current chapter is visible. */
+    private fun preloadTextAround(doc: NativeDocument, current: Int) {
+        if (!doc.isLazy) return
+        listOf(current + 1, current - 1).forEach { target ->
+            if (target !in doc.chapters.indices || doc.isChapterLoaded(target) || !textChapterLoading.add(target)) return@forEach
+            LumosSession.task({ result ->
+                textChapterLoading.remove(target)
+                result.onFailure { Log.d("LumosReader", "chapter prefetch skipped index=$target", it) }
+            }) { doc.chapterAt(target); Unit }
         }
     }
 
@@ -405,7 +501,8 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         val chapters = document?.chapters?.size ?: 1
         val pageFraction = if (total <= 1) 0.0 else page.toDouble() / (total - 1)
         currentProgress = (chapter + pageFraction) / chapters
-        composeProgress = currentProgress; composeStatus = "${document?.chapterAt(chapter)?.title.orEmpty()}  ${page + 1}/$total"
+        composeProgress = currentProgress
+        composeStatus = "第 ${chapter + 1}/$chapters 章 · ${document?.chapters?.getOrNull(chapter)?.title.orEmpty()} · 本章 ${page + 1}/$total 页"
         LumosSession.saveProgress(book.id, currentProgress, "$chapter:$pageFraction")
     }
 
@@ -442,7 +539,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         view.applyStyle(NativeTextPageView.Style(
             textSizeSp = settings.fontSize.toFloat(), lineSpacing = settings.lineSpacing,
             leftPaddingDp = if (settings.customMargins) settings.leftMargin else settings.margin,
-            rightPaddingDp = if (settings.customMargins) settings.rightMargin else settings.margin,
+            rightPaddingDp = if (settings.customMargins) settings.leftMargin else settings.margin,
             topPaddingDp = if (settings.customMargins) settings.topMargin else 24,
             bottomPaddingDp = if (settings.customMargins) settings.bottomMargin else 28,
             alignment = settings.alignment,

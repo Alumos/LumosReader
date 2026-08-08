@@ -41,7 +41,9 @@ class ReaderSettingsStore(context: Context) {
         topMargin = prefs.getInt("top_margin", 24),
         bottomMargin = prefs.getInt("bottom_margin", 24),
         leftMargin = prefs.getInt("left_margin", 28),
-        rightMargin = prefs.getInt("right_margin", 28),
+        // The UI intentionally exposes one horizontal-margin value. Normalize
+        // legacy asymmetric settings so old profiles cannot reintroduce drift.
+        rightMargin = prefs.getInt("left_margin", 28),
         indent = prefs.getInt("indent", 2),
         alignment = normalizeAlignment(prefs.getString("alignment", "left").orEmpty()),
         background = if (eink) "white" else prefs.getString("reading_background", "white").orEmpty(),

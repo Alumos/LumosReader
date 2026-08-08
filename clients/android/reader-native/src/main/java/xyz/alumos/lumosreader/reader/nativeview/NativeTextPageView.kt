@@ -40,6 +40,8 @@ class NativeTextPageView(context: Context) : View(context) {
     private var chapterTitle = ""
     private var layout: StaticLayout? = null
     private var starts = intArrayOf(0)
+    private var contentLeft = 0
+    private var contentRight = 0
     var page = 0; private set
     val pageCount get() = starts.size
     var onPageChanged: ((Int, Int) -> Unit)? = null
@@ -94,6 +96,8 @@ class NativeTextPageView(context: Context) : View(context) {
         val density = resources.displayMetrics.density
         val left = (style.leftPaddingDp * density).roundToInt().coerceAtLeast(0)
         val right = (style.rightPaddingDp * density).roundToInt().coerceAtLeast(0)
+        contentLeft = left
+        contentRight = right
         paint.textSize = style.textSizeSp * resources.displayMetrics.scaledDensity
         paint.typeface = style.textTypeface
         paint.color = style.textColor
@@ -106,7 +110,8 @@ class NativeTextPageView(context: Context) : View(context) {
         val rendered = SpannableString(renderedText).apply {
             if (chapterTitle.isNotBlank()) setSpan(TitleSpan(style.titleTypeface), 0, chapterTitle.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        val builder = StaticLayout.Builder.obtain(rendered, 0, rendered.length, paint, (width - left - right).coerceAtLeast(1))
+        val contentWidth = (width - contentLeft - contentRight).coerceAtLeast(1)
+        val builder = StaticLayout.Builder.obtain(rendered, 0, rendered.length, paint, contentWidth)
             .setAlignment(when (style.alignment) {
                 "center" -> Layout.Alignment.ALIGN_CENTER
                 "right" -> Layout.Alignment.ALIGN_OPPOSITE
@@ -168,14 +173,12 @@ class NativeTextPageView(context: Context) : View(context) {
         val pageTop = current.getLineTop(starts[page]).toFloat()
         val pageBottom = starts.getOrNull(page + 1)?.let(current::getLineTop)?.toFloat() ?: current.height.toFloat()
         canvas.save()
-        canvas.clipRect(0f, 0f, width.toFloat(), height.toFloat())
-        val left = (style.leftPaddingDp * density).roundToInt().toFloat()
         val top = (style.topPaddingDp * density).roundToInt().toFloat()
-        canvas.translate(left, top - pageTop)
-        // Clip in the translated viewport. Clipping with the layout's absolute
-        // line coordinates cuts the last visible line at the bottom edge.
-        // The bottom edge follows the next page's first line, so a partial line
-        // can never leak into the current page.
+        val bottom = (style.bottomPaddingDp * density).roundToInt().toFloat()
+        // Clip in device coordinates first, then translate the layout into that
+        // exact viewport. This keeps the two horizontal margins truly symmetric.
+        canvas.clipRect(contentLeft.toFloat(), top, (width - contentRight).toFloat(), height - bottom)
+        canvas.translate(contentLeft.toFloat(), top - pageTop)
         canvas.clipRect(0f, pageTop, current.width.toFloat(), pageBottom)
         current.draw(canvas)
         canvas.restore()

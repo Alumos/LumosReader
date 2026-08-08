@@ -10,22 +10,38 @@ import java.util.zip.Inflater
 import java.io.StringReader
 import javax.xml.parsers.DocumentBuilderFactory
 import org.xml.sax.InputSource
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.FutureTask
+import java.util.LinkedHashMap
 
 data class NativeChapter(val title: String, val text: String, val imageEntry: String? = null)
 class NativeDocument(val chapters: List<NativeChapter>, private val chapterLoader: ((Int) -> NativeChapter)? = null, private val resourceLoader: ((String) -> ByteArray)? = null) {
     val isLazy: Boolean get() = chapterLoader != null
-    private val loaded = HashMap<Int, NativeChapter>()
-    @Synchronized fun isChapterLoaded(index: Int) = chapters[index].text.isNotBlank() || loaded.containsKey(index)
-    @Synchronized fun chapterAt(index: Int): NativeChapter {
+    private val loaded = object : LinkedHashMap<Int, NativeChapter>(CHAPTER_CACHE_SIZE, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, NativeChapter>?) = size > CHAPTER_CACHE_SIZE
+    }
+    private val loading = ConcurrentHashMap<Int, FutureTask<NativeChapter>>()
+    fun isChapterLoaded(index: Int) = chapters[index].text.isNotBlank() || synchronized(loaded) { loaded.containsKey(index) }
+    fun chapterAt(index: Int): NativeChapter {
         require(index in chapters.indices)
         val placeholder = chapters[index]
-        if (placeholder.text.isBlank() && chapterLoader != null) return loaded.getOrPut(index) {
-            val value = chapterLoader.invoke(index)
-            value.copy(title = placeholder.title.ifBlank { value.title })
+        if (placeholder.text.isNotBlank() || chapterLoader == null) return placeholder
+        synchronized(loaded) { loaded[index] }?.let { return it }
+        val candidate = FutureTask {
+            val loadedChapter = chapterLoader.invoke(index)
+            loadedChapter
         }
-        return placeholder
+        val task = loading.putIfAbsent(index, candidate) ?: candidate.also(FutureTask<NativeChapter>::run)
+        return try {
+            val chapter = task.get()
+            synchronized(loaded) { loaded[index] ?: chapter.also { loaded[index] = it } }
+        } finally {
+            loading.remove(index, task)
+        }
     }
     fun resource(path: String): ByteArray = resourceLoader?.invoke(path) ?: error("远程资源不可用")
+
+    private companion object { const val CHAPTER_CACHE_SIZE = 5 }
 }
 
 object LocalBookParser {
@@ -39,8 +55,9 @@ object LocalBookParser {
     /** Reads only the ZIP central directory and requested EPUB entries over HTTP ranges. */
     fun parseRemoteEpub(size: Long, readRange: (Long, Long) -> ByteArray): NativeDocument {
         require(size > 0) { "EPUB 大小无效" }
-        val entries = RemoteZip(readRange, size).entries
-        fun entryBytes(path: String) = RemoteZip(readRange, size, entries).read(path)
+        val archive = RemoteZip(readRange, size)
+        val entries = archive.entries
+        fun entryBytes(path: String) = archive.read(path)
         val container = entryBytes("META-INF/container.xml").toString(Charsets.UTF_8)
         val packagePath = Regex("full-path\\s*=\\s*[\"']([^\"']+)").find(container)?.groupValues?.get(1)
             ?: error("EPUB 未声明内容包")
@@ -87,7 +104,8 @@ object LocalBookParser {
         return NativeDocument(metadata, { index ->
             val path = refs[index].first
             val html = entryBytes(path).toString(Charsets.UTF_8)
-            parseHtmlChapter(html, refs[index].second, entries)
+            val parsed = parseHtmlChapter(html, path, entries)
+            parsed.copy(title = navigationTitles[path].orEmpty().ifBlank { parsed.title })
         }, ::entryBytes)
     }
 
@@ -101,6 +119,11 @@ object LocalBookParser {
         return NativeChapter(title, text, imageEntry)
     }
 
+    /**
+     * Opens only the EPUB package and navigation metadata. Chapter XHTML is read
+     * on demand so a cached multi-thousand-chapter novel does not block its first
+     * page on parsing the entire archive.
+     */
     private fun parseEpub(file: File): NativeDocument = ZipFile(file).use { archive ->
         val container = archive.getEntry("META-INF/container.xml") ?: error("EPUB 缺少 container.xml")
         val containerXML = archive.getInputStream(container).use { it.readBytes().toString(Charsets.UTF_8) }
@@ -144,26 +167,28 @@ object LocalBookParser {
             else -> emptyMap()
         }
         val spine = document.getElementsByTagNameNS("*", "itemref")
-        val chapters = buildList {
+        val refs = buildList {
             for (index in 0 until spine.length) {
                 val id = spine.item(index).attributes.getNamedItem("idref")?.nodeValue ?: continue
                 val href = manifest[id]?.takeIf(String::isNotBlank) ?: continue
                 val path = normalizeEntry(base, href)
-                val entry = archive.getEntry(path) ?: continue
-                val html = archive.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
-                val title = navigationTitles[path].orEmpty().ifBlank { Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-                    .find(html)?.groupValues?.get(1)?.let(::htmlText)?.trim().orEmpty().ifBlank { href.substringAfterLast('/').substringBeforeLast('.') } }
-                val body = Regex("<body[^>]*>(.*?)</body>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).find(html)?.groupValues?.get(1) ?: html
-                val text = htmlText(body).replace(Regex("\\n{3,}"), "\n\n").trim()
-                val imageHref = Regex("<(img|image)[^>]+(?:src|href|xlink:href)\\s*=\\s*[\"']([^\"']+)", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(2)
-                val imageEntry = imageHref?.let { source ->
-                    val imagePath = normalizeEntry(path.substringBeforeLast('/', ""), source)
-                    imagePath.takeIf { archive.getEntry(it) != null }
-                }
-                if (text.isNotBlank() || imageEntry != null) add(NativeChapter(title.ifBlank { "第 ${size + 1} 章" }, text, imageEntry))
+                if (archive.getEntry(path) != null) add(path to href)
             }
         }
-        NativeDocument(chapters.ifEmpty { error("EPUB 没有可阅读正文") })
+        require(refs.isNotEmpty()) { "EPUB 没有可阅读正文" }
+        val entries = archive.entries().asSequence().associate { it.name to RemoteZip.Entry(0, it.compressedSize, it.size, 0) }
+        val metadata = refs.mapIndexed { index, (path, href) ->
+            NativeChapter(navigationTitles[path].orEmpty().ifBlank { href.substringAfterLast('/').substringBeforeLast('.').ifBlank { "第 ${index + 1} 章" } }, "")
+        }
+        NativeDocument(metadata, { index ->
+            val (path, href) = refs[index]
+            val html = ZipFile(file).use { current ->
+                val entry = current.getEntry(path) ?: error("EPUB 缺少章节：$path")
+                current.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+            }
+            val parsed = parseHtmlChapter(html, path, entries)
+            parsed.copy(title = navigationTitles[path].orEmpty().ifBlank { parsed.title })
+        }, { entry -> image(file, entry) })
     }
 
     private fun parseMobi(file: File): NativeDocument {

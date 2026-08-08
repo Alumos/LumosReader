@@ -166,7 +166,7 @@ func (s *store) ReadingStats(now time.Time) (ReadingStats, error) {
 	if err := s.db.QueryRow(`SELECT COALESCE(SUM(seconds), 0), COALESCE(SUM(CASE WHEN day = ? THEN seconds ELSE 0 END), 0) FROM reading_time`, now.Format(time.DateOnly)).Scan(&stats.TotalSeconds, &stats.TodaySeconds); err != nil {
 		return stats, err
 	}
-	rows, err := s.db.Query(`SELECT day, SUM(seconds) FROM reading_time WHERE day >= ? GROUP BY day ORDER BY day`, now.AddDate(0, 0, -6).Format(time.DateOnly))
+	rows, err := s.db.Query(`SELECT day, SUM(seconds) FROM reading_time WHERE day >= ? GROUP BY day ORDER BY day`, now.AddDate(0, 0, -29).Format(time.DateOnly))
 	if err != nil {
 		return stats, err
 	}
