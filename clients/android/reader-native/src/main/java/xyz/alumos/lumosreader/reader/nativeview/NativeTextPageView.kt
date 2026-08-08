@@ -1,5 +1,6 @@
 package xyz.alumos.lumosreader.reader.nativeview
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -113,7 +114,7 @@ class NativeTextPageView(context: Context) : View(context) {
             })
             .setLineSpacing(style.paragraphSpacingDp * density, style.lineSpacing)
             .setIncludePad(false)
-        if (Build.VERSION.SDK_INT >= 26 && style.alignment == "justify") builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)
+        applyJustification(builder)
         layout = builder.build()
         val top = (style.topPaddingDp * density).roundToInt().coerceAtLeast(0)
         val bottom = (style.bottomPaddingDp * density).roundToInt().coerceAtLeast(0)
@@ -133,6 +134,15 @@ class NativeTextPageView(context: Context) : View(context) {
         page = ((starts.size - 1) * fraction).toInt().coerceIn(starts.indices)
         invalidate()
         onPageChanged?.invoke(page, pageCount)
+    }
+
+    @SuppressLint("WrongConstant")
+    private fun applyJustification(builder: StaticLayout.Builder) {
+        if (Build.VERSION.SDK_INT >= 26 && style.alignment == "justify") {
+            // Android 36 annotates this parameter with LineBreaker constants,
+            // while API 26-28 only expose the equivalent Layout constant.
+            builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)
+        }
     }
 
     private class TitleSpan(private val face: Typeface?) : MetricAffectingSpan() {
