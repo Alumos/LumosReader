@@ -8,11 +8,19 @@ import java.net.URLDecoder
 import java.util.zip.ZipFile
 import java.util.zip.Inflater
 import java.io.StringReader
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import javax.xml.parsers.DocumentBuilderFactory
 import org.xml.sax.InputSource
+import org.xml.sax.Attributes
+import org.xml.sax.helpers.DefaultHandler
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.FutureTask
 import java.util.LinkedHashMap
+import android.os.SystemClock
+import android.util.Log
 
 data class NativeChapter(val title: String, val text: String, val imageEntry: String? = null)
 class NativeDocument(val chapters: List<NativeChapter>, private val chapterLoader: ((Int) -> NativeChapter)? = null, private val resourceLoader: ((String) -> ByteArray)? = null) {
@@ -45,26 +53,49 @@ class NativeDocument(val chapters: List<NativeChapter>, private val chapterLoade
 }
 
 object LocalBookParser {
-    fun parse(file: File, format: String): NativeDocument = when (format.lowercase()) {
-        "epub" -> parseEpub(file)
+    private const val INDEX_MAGIC = 0x4c455049
+    private const val INDEX_VERSION = 1
+    private const val MAX_INDEX_ENTRIES = 1_000_000
+    private const val MAX_INDEX_STRING_BYTES = 1024 * 1024
+    fun parse(
+        file: File,
+        format: String,
+        cachedEpubIndex: ByteArray? = null,
+        onEpubIndex: (ByteArray) -> Unit = {},
+    ): NativeDocument = when (format.lowercase()) {
+        "epub" -> parseEpub(file, cachedEpubIndex, onEpubIndex)
         "mobi", "azw3" -> parseMobi(file)
         "txt" -> NativeDocument(listOf(NativeChapter("正文", decodeText(file.readBytes()))))
         else -> error("暂不支持本地解析 ${format.uppercase()}")
     }
 
     /** Reads only the ZIP central directory and requested EPUB entries over HTTP ranges. */
-    fun parseRemoteEpub(size: Long, readRange: (Long, Long) -> ByteArray): NativeDocument {
+    fun parseRemoteEpub(
+        size: Long,
+        cachedEpubIndex: ByteArray? = null,
+        onEpubIndex: (ByteArray) -> Unit = {},
+        readRange: (Long, Long) -> ByteArray,
+    ): NativeDocument {
+        val startedAt = SystemClock.elapsedRealtime()
+        fun trace(stage: String) = Log.i("LumosOpen", "parser +${SystemClock.elapsedRealtime() - startedAt}ms $stage")
         require(size > 0) { "EPUB 大小无效" }
         val archive = RemoteZip(readRange, size)
+        trace("central directory entries=${archive.entries.size}")
         val entries = archive.entries
         fun entryBytes(path: String) = archive.read(path)
+        decodeIndex(cachedEpubIndex)?.takeIf { index -> index.isNotEmpty() && index.all { entries.containsKey(it.path) } }?.let { index ->
+            trace("persistent index hit spine=${index.size}")
+            return remoteDocument(index, entries) { path -> entryBytes(path) }
+        }
         val container = entryBytes("META-INF/container.xml").toString(Charsets.UTF_8)
+        trace("container")
         val packagePath = Regex("full-path\\s*=\\s*[\"']([^\"']+)").find(container)?.groupValues?.get(1)
             ?: error("EPUB 未声明内容包")
         val packageXml = entryBytes(packagePath)
         val document = secureDocuments().newDocumentBuilder().apply {
             setEntityResolver { _, _ -> InputSource(StringReader("")) }
         }.parse(packageXml.inputStream())
+        trace("package parsed bytes=${packageXml.size}")
         var navigationHref = ""
         var ncxHref = ""
         val manifest = buildMap {
@@ -88,10 +119,9 @@ object LocalBookParser {
         } else if (ncxHref.isNotBlank()) {
             val ncxPath = normalizeEntry(base, ncxHref)
             val ncx = entryBytes(ncxPath).toString(Charsets.UTF_8)
-            Regex("<navPoint[^>]*>.*?<text[^>]*>(.*?)</text>.*?<content[^>]+src\\s*=\\s*[\"']([^\"']+)[\"']", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(ncx).associate { match ->
-                normalizeEntry(ncxPath.substringBeforeLast('/', ""), match.groupValues[2]) to htmlText(match.groupValues[1]).trim()
-            }
+            parseNcxNavigation(ncx, ncxPath)
         } else emptyMap()
+        trace("navigation titles=${navigationTitles.size}")
         val refs = buildList {
             val spine = document.getElementsByTagNameNS("*", "itemref")
             for (index in 0 until spine.length) {
@@ -100,13 +130,21 @@ object LocalBookParser {
                 add(normalizeEntry(base, href) to href)
             }
         }
-        val metadata = refs.map { (path, href) -> NativeChapter(navigationTitles[path].orEmpty().ifBlank { href.substringAfterLast('/').substringBeforeLast('.') }, "") }
-        return NativeDocument(metadata, { index ->
-            val path = refs[index].first
+        val index = refs.map { (path, _) -> EpubIndexEntry(path, navigationTitles[path].orEmpty()) }
+        runCatching { onEpubIndex(encodeIndex(index)) }
+        trace("metadata ready spine=${index.size}")
+        return remoteDocument(index, entries) { path -> entryBytes(path) }
+    }
+
+    private fun remoteDocument(index: List<EpubIndexEntry>, entries: Map<String, RemoteZip.Entry>, entryBytes: (String) -> ByteArray): NativeDocument {
+        val metadata = index.mapIndexed { chapterIndex, item -> NativeChapter(indexTitle(item, chapterIndex), "") }
+        return NativeDocument(metadata, { chapterIndex ->
+            val item = index[chapterIndex]
+            val path = item.path
             val html = entryBytes(path).toString(Charsets.UTF_8)
             val parsed = parseHtmlChapter(html, path, entries)
-            parsed.copy(title = navigationTitles[path].orEmpty().ifBlank { parsed.title })
-        }, ::entryBytes)
+            parsed.copy(title = item.title.ifBlank { parsed.title })
+        }, { path -> entryBytes(path) })
     }
 
     private fun parseHtmlChapter(html: String, href: String, entries: Map<String, RemoteZip.Entry>): NativeChapter {
@@ -124,7 +162,11 @@ object LocalBookParser {
      * on demand so a cached multi-thousand-chapter novel does not block its first
      * page on parsing the entire archive.
      */
-    private fun parseEpub(file: File): NativeDocument = ZipFile(file).use { archive ->
+    private fun parseEpub(file: File, cachedEpubIndex: ByteArray?, onEpubIndex: (ByteArray) -> Unit): NativeDocument = ZipFile(file).use { archive ->
+        val archiveEntries = archive.entries().asSequence().associate { it.name to RemoteZip.Entry(0, it.compressedSize, it.size, 0) }
+        decodeIndex(cachedEpubIndex)?.takeIf { index -> index.isNotEmpty() && index.all { archive.getEntry(it.path) != null } }?.let { index ->
+            return localDocument(file, index, archiveEntries)
+        }
         val container = archive.getEntry("META-INF/container.xml") ?: error("EPUB 缺少 container.xml")
         val containerXML = archive.getInputStream(container).use { it.readBytes().toString(Charsets.UTF_8) }
         val packagePath = Regex("full-path\\s*=\\s*[\"']([^\"']+)").find(containerXML)?.groupValues?.get(1)
@@ -160,9 +202,7 @@ object LocalBookParser {
             ncxHref.isNotBlank() -> {
                 val ncxPath = normalizeEntry(base, ncxHref)
                 val ncx = archive.getEntry(ncxPath)?.let { archive.getInputStream(it).use { input -> input.readBytes().toString(Charsets.UTF_8) } }.orEmpty()
-                Regex("<navPoint[^>]*>.*?<text[^>]*>(.*?)</text>.*?<content[^>]+src\\s*=\\s*[\"']([^\"']+)[\"']", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(ncx).associate { match ->
-                    normalizeEntry(ncxPath.substringBeforeLast('/', ""), match.groupValues[2]) to htmlText(match.groupValues[1]).trim()
-                }
+                parseNcxNavigation(ncx, ncxPath)
             }
             else -> emptyMap()
         }
@@ -176,19 +216,61 @@ object LocalBookParser {
             }
         }
         require(refs.isNotEmpty()) { "EPUB 没有可阅读正文" }
-        val entries = archive.entries().asSequence().associate { it.name to RemoteZip.Entry(0, it.compressedSize, it.size, 0) }
-        val metadata = refs.mapIndexed { index, (path, href) ->
-            NativeChapter(navigationTitles[path].orEmpty().ifBlank { href.substringAfterLast('/').substringBeforeLast('.').ifBlank { "第 ${index + 1} 章" } }, "")
+        val index = refs.map { (path, _) ->
+            EpubIndexEntry(path, navigationTitles[path].orEmpty())
         }
-        NativeDocument(metadata, { index ->
-            val (path, href) = refs[index]
+        runCatching { onEpubIndex(encodeIndex(index)) }
+        localDocument(file, index, archiveEntries)
+    }
+
+    private fun localDocument(file: File, index: List<EpubIndexEntry>, entries: Map<String, RemoteZip.Entry>): NativeDocument {
+        val metadata = index.mapIndexed { chapterIndex, item -> NativeChapter(indexTitle(item, chapterIndex), "") }
+        return NativeDocument(metadata, { chapterIndex ->
+            val item = index[chapterIndex]
+            val path = item.path
             val html = ZipFile(file).use { current ->
                 val entry = current.getEntry(path) ?: error("EPUB 缺少章节：$path")
                 current.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
             }
             val parsed = parseHtmlChapter(html, path, entries)
-            parsed.copy(title = navigationTitles[path].orEmpty().ifBlank { parsed.title })
+            parsed.copy(title = item.title.ifBlank { parsed.title })
         }, { entry -> image(file, entry) })
+    }
+
+    private data class EpubIndexEntry(val path: String, val title: String)
+    private fun indexTitle(item: EpubIndexEntry, index: Int) = item.title.ifBlank {
+        item.path.substringAfterLast('/').substringBeforeLast('.').ifBlank { "第 ${index + 1} 章" }
+    }
+
+    private fun encodeIndex(index: List<EpubIndexEntry>): ByteArray = ByteArrayOutputStream().use { bytes ->
+        DataOutputStream(bytes).use { output ->
+            output.writeInt(INDEX_MAGIC)
+            output.writeInt(INDEX_VERSION)
+            output.writeInt(index.size)
+            index.forEach { item -> output.writeSized(item.path); output.writeSized(item.title) }
+        }
+        bytes.toByteArray()
+    }
+
+    private fun decodeIndex(bytes: ByteArray?): List<EpubIndexEntry>? = runCatching {
+        if (bytes == null) return null
+        DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+            require(input.readInt() == INDEX_MAGIC && input.readInt() == INDEX_VERSION)
+            val count = input.readInt()
+            require(count in 1..MAX_INDEX_ENTRIES)
+            List(count) { EpubIndexEntry(input.readSized(), input.readSized()) }
+        }
+    }.getOrNull()
+
+    private fun DataOutputStream.writeSized(value: String) {
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        writeInt(bytes.size); write(bytes)
+    }
+
+    private fun DataInputStream.readSized(): String {
+        val size = readInt()
+        require(size in 0..MAX_INDEX_STRING_BYTES)
+        return ByteArray(size).also(::readFully).toString(Charsets.UTF_8)
     }
 
     private fun parseMobi(file: File): NativeDocument {
@@ -245,6 +327,60 @@ object LocalBookParser {
                 else -> runCatching { Character.toChars(if (entity.startsWith("#x")) entity.drop(2).toInt(16) else entity.drop(1).toInt()).concatToString() }.getOrDefault(match.value)
             }
         }
+    }
+
+    /**
+     * Parses EPUB 2 navigation in one pass. A DOTALL expression over thousands
+     * of navPoint elements repeatedly backtracks across the remaining document;
+     * a 6,000 chapter novel can otherwise spend seconds here before reading a
+     * single chapter.
+     */
+    private fun parseNcxNavigation(ncx: String, ncxPath: String): Map<String, String> {
+        if (ncx.isBlank()) return emptyMap()
+        data class Point(val title: StringBuilder = StringBuilder(), var source: String = "", var readingTitle: Boolean = false)
+        val points = ArrayDeque<Point>()
+        val result = LinkedHashMap<String, String>()
+        val handler = object : DefaultHandler() {
+            private fun name(localName: String, qName: String) = (localName.ifBlank { qName }).substringAfter(':').lowercase()
+
+            override fun startElement(uri: String?, localName: String, qName: String, attributes: Attributes) {
+                when (name(localName, qName)) {
+                    "navpoint" -> points.addLast(Point())
+                    "text" -> points.lastOrNull()?.readingTitle = true
+                    "content" -> points.lastOrNull()?.source = attributes.getValue("src").orEmpty()
+                }
+            }
+
+            override fun characters(ch: CharArray, start: Int, length: Int) {
+                points.lastOrNull()?.takeIf(Point::readingTitle)?.title?.append(ch, start, length)
+            }
+
+            override fun endElement(uri: String?, localName: String, qName: String) {
+                when (name(localName, qName)) {
+                    "text" -> points.lastOrNull()?.readingTitle = false
+                    "navpoint" -> {
+                        val point = points.removeLastOrNull() ?: return
+                        if (point.source.isNotBlank()) {
+                            val path = normalizeEntry(ncxPath.substringBeforeLast('/', ""), point.source)
+                            result[path] = htmlText(point.title.toString()).trim()
+                        }
+                    }
+                }
+            }
+        }
+        secureSax().newSAXParser().xmlReader.apply {
+            contentHandler = handler
+            entityResolver = org.xml.sax.EntityResolver { _, _ -> InputSource(StringReader("")) }
+        }.parse(InputSource(StringReader(ncx)))
+        return result
+    }
+
+    private fun secureSax() = javax.xml.parsers.SAXParserFactory.newInstance().apply {
+        isNamespaceAware = true
+        runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+        runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+        runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+        runCatching { setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false) }
     }
 
     private fun decodeText(bytes: ByteArray): String = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")

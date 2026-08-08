@@ -1,10 +1,12 @@
 package xyz.alumos.lumosreader
 
 import android.content.Intent
+import android.net.Uri
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
@@ -54,6 +56,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import xyz.alumos.lumosreader.core.LumosSession
+import xyz.alumos.lumosreader.reader.nativeview.LocalBookParser
 import uniffi.lumos_core.Book
 import uniffi.lumos_core.Bookshelf
 import uniffi.lumos_core.ReadingStats
@@ -61,10 +64,17 @@ import uniffi.lumos_core.ServerFont
 import uniffi.lumos_core.ServerInfo
 import uniffi.lumos_core.ShelvesState
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
+import kotlin.math.floor
 
-private enum class AppPage { CONNECTION, LOGIN, LIBRARY, SETTINGS, STATS, FONTS, CACHE, SHELVES }
+private enum class AppPage { CONNECTION, LOGIN, LIBRARY, SETTINGS, STATS, FONTS, CACHE, SHELVES, ABOUT }
 
 class MainActivity : ComponentActivity() {
+    private val readerCache by lazy { ReaderCache(this) }
+    private val warmupHandler = Handler(Looper.getMainLooper())
+    private var indexWarmup: Runnable? = null
     private val prefs by lazy { getSharedPreferences("lumos_connection", MODE_PRIVATE) }
     private val secureCookie by lazy { SecureCookieStore(this) }
     private var page by mutableStateOf(AppPage.CONNECTION)
@@ -122,6 +132,7 @@ class MainActivity : ComponentActivity() {
                 AppPage.FONTS -> FontsScreen()
                 AppPage.CACHE -> CacheScreen()
                 AppPage.SHELVES -> ShelvesScreen()
+                AppPage.ABOUT -> AboutScreen()
             } }
             if (loading) Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background.copy(alpha = .93f)) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
@@ -174,6 +185,7 @@ class MainActivity : ComponentActivity() {
                     (query.isBlank() || "${book.title} ${book.author} ${book.series}".contains(query.trim(), true))
             }
         }
+        val tablet = LocalConfiguration.current.smallestScreenWidthDp >= 600
         val focusManager = LocalFocusManager.current
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().pointerInput(Unit) {
             awaitPointerEventScope {
@@ -186,20 +198,27 @@ class MainActivity : ComponentActivity() {
             val wide = maxWidth >= 720.dp
             val controls: @Composable ColumnScope.() -> Unit = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("微光阅", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    if (einkEnabled) OutlinedButton({ scanLibrary() }, enabled = !scanning, contentPadding = PaddingValues(horizontal = 14.dp), border = lumosBorder(true), colors = lumosOutlinedButtonColors(true)) { Text(if (scanning) "扫描中" else "扫描") }
-                    else FilledTonalButton({ scanLibrary() }, enabled = !scanning, contentPadding = PaddingValues(horizontal = 14.dp)) { Text(if (scanning) "扫描中" else "扫描") }
-                    Spacer(Modifier.width(8.dp)); OutlinedButton(::showSettings, contentPadding = PaddingValues(horizontal = 14.dp), border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("设置") }
+                    Text("微光阅", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, modifier = Modifier.weight(1f))
+                    if (einkEnabled) OutlinedButton({ scanLibrary() }, enabled = !scanning, contentPadding = PaddingValues(horizontal = 10.dp), border = lumosBorder(true), colors = lumosOutlinedButtonColors(true)) { Text(if (scanning) "扫描中" else "扫描") }
+                    else FilledTonalButton({ scanLibrary() }, enabled = !scanning, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(if (scanning) "扫描中" else "扫描") }
+                    Spacer(Modifier.width(6.dp)); OutlinedButton(::showSettings, contentPadding = PaddingValues(horizontal = 10.dp), border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("设置") }
                 }
                 Spacer(Modifier.height(14.dp))
-                AdaptiveDropdown("书架", shelf, shelfNames) { shelf = it; category = "全部分类" }
-                Spacer(Modifier.height(10.dp)); AdaptiveDropdown("分类", category, categoryNames) { category = it }
+                if (!wide && tablet) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(Modifier.weight(1f)) { AdaptiveDropdown("书架", shelf, shelfNames) { shelf = it; category = "全部分类" } }
+                        Box(Modifier.weight(1f)) { AdaptiveDropdown("分类", category, categoryNames) { category = it } }
+                    }
+                } else {
+                    AdaptiveDropdown("书架", shelf, shelfNames) { shelf = it; category = "全部分类" }
+                    Spacer(Modifier.height(10.dp)); AdaptiveDropdown("分类", category, categoryNames) { category = it }
+                }
                 Spacer(Modifier.height(10.dp)); OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().heightIn(min = 52.dp), placeholder = { Text("搜索") }, singleLine = true, shape = LumosShape, keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }))
                 Spacer(Modifier.height(10.dp)); Text("${presentWorks(filtered).size} 部作品", style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (wide) Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                Surface(Modifier.widthIn(min = 230.dp, max = 290.dp).fillMaxHeight(), shape = LumosShape, tonalElevation = if (einkEnabled) 0.dp else 2.dp, border = lumosBorder(einkEnabled)) {
-                    Column(Modifier.padding(18.dp), content = controls)
+            if (wide) Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                Surface(Modifier.widthIn(min = 190.dp, max = 230.dp).fillMaxHeight(), shape = LumosShape, tonalElevation = if (einkEnabled) 0.dp else 2.dp, border = lumosBorder(einkEnabled)) {
+                    Column(Modifier.padding(16.dp), content = controls)
                 }
                 LibraryPager(filtered, Modifier.weight(1f).fillMaxHeight(), wide = true)
             } else Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -211,34 +230,37 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun LibraryPager(source: List<Book>, modifier: Modifier, wide: Boolean) {
-        val tablet = LocalConfiguration.current.smallestScreenWidthDp >= 600
-        val columns = if (wide) if (tablet) 5 else 4 else 2
-        val rows = if (wide) 1 else 2
-        val capacity = columns * rows
-        val activeFilter = source !== books && source.size != books.size
-        val pages = remember(source, capacity, activeFilter) {
-            if (activeFilter) presentWorks(source).chunked(capacity).mapIndexed { index, values -> ComposeLibraryPage("筛选结果", "第 ${index + 1} 页", values) }
-            else buildList {
-                val recent = source.filter { it.progressTime.isNotBlank() }.sortedByDescending(Book::progressTime).take(capacity)
-                if (recent.isNotEmpty()) add(ComposeLibraryPage("最近阅读", "继续上次阅读", presentWorks(recent)))
-                listOf("图书" to source.filter { it.shelfKind != "comic" }, "漫画" to source.filter { it.shelfKind == "comic" }).forEach { (title, values) ->
-                    val works = presentWorks(values); works.chunked(capacity).forEachIndexed { i, chunk -> add(ComposeLibraryPage(title, "第 ${i + 1}/${(works.size + capacity - 1) / capacity} 页", chunk)) }
+        BoxWithConstraints(modifier) {
+            val landscapeShape = maxWidth > maxHeight * 1.12f
+            val minimumCardWidth = if (landscapeShape) 126.dp else 174.dp
+            val columns = floor(((maxWidth + 16.dp) / (minimumCardWidth + 16.dp))).toInt().coerceIn(2, 7)
+            val cardWidth = (maxWidth - 16.dp * (columns - 1)) / columns
+            val gridHeight = (maxHeight - 62.dp).coerceAtLeast(1.dp)
+            val completeCardHeight = cardWidth / .68f + 34.dp
+            val rows = floor(((gridHeight + 10.dp) / (completeCardHeight + 10.dp))).toInt().coerceIn(1, 3)
+            val capacity = columns * rows
+            val activeFilter = source !== books && source.size != books.size
+            val pages = remember(source, capacity, activeFilter) {
+                if (activeFilter) presentWorks(source).chunked(capacity).mapIndexed { index, values -> ComposeLibraryPage("筛选结果", "第 ${index + 1} 页", values) }
+                else buildList {
+                    val recent = source.filter { it.progressTime.isNotBlank() }.sortedByDescending(Book::progressTime).take(capacity)
+                    if (recent.isNotEmpty()) add(ComposeLibraryPage("最近阅读", "继续上次阅读", presentWorks(recent)))
+                    listOf("图书" to source.filter { it.shelfKind != "comic" }, "漫画" to source.filter { it.shelfKind == "comic" }).forEach { (title, values) ->
+                        val works = presentWorks(values); works.chunked(capacity).forEachIndexed { i, chunk -> add(ComposeLibraryPage(title, "第 ${i + 1}/${(works.size + capacity - 1) / capacity} 页", chunk)) }
+                    }
                 }
             }
-        }
-        if (pages.isEmpty()) Box(modifier, contentAlignment = Alignment.Center) { Text("没有符合条件的书籍", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        else {
-            val state = rememberPagerState(pageCount = { pages.size })
-            HorizontalPager(state, modifier, pageSpacing = 12.dp, key = { "${pages[it].title}-$it" }) { index ->
-                val page = pages[index]
-                Column(Modifier.fillMaxSize()) {
-                    Text(page.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                    Text(page.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    Spacer(Modifier.height(10.dp))
-                    BoxWithConstraints(Modifier.weight(1f)) {
-                        val cardHeight = (maxHeight - (10.dp * (rows - 1))) / rows
-                        LazyVerticalGrid(GridCells.Fixed(columns), Modifier.fillMaxSize(), userScrollEnabled = false, verticalArrangement = Arrangement.spacedBy(10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            items(page.items, key = { libraryKey(it) }) { item -> BookCard(item, Modifier.height(cardHeight)) }
+            if (pages.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("没有符合条件的书籍", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            else {
+                val state = rememberPagerState(pageCount = { pages.size })
+                HorizontalPager(state, Modifier.fillMaxSize(), pageSpacing = 12.dp, key = { "${pages[it].title}-$it" }) { index ->
+                    val page = pages[index]
+                    Column(Modifier.fillMaxSize()) {
+                        Text(page.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text(page.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        Spacer(Modifier.height(10.dp))
+                        LazyVerticalGrid(GridCells.Fixed(columns), Modifier.weight(1f).fillMaxWidth(), userScrollEnabled = false, verticalArrangement = Arrangement.spacedBy(10.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            items(page.items, key = { libraryKey(it) }) { item -> BookCard(item, Modifier) }
                         }
                     }
                 }
@@ -251,34 +273,83 @@ class MainActivity : ComponentActivity() {
         val book = when (item) { is LibraryItem.BookEntry -> item.book; is LibraryItem.SeriesEntry -> item.books.first(); else -> return }
         val title = if (item is LibraryItem.SeriesEntry) item.name else book.title
         val subtitle = if (item is LibraryItem.SeriesEntry) "${item.books.size} 卷" else "${(book.progress * 100).toInt()}% · ${book.author.ifBlank { book.format.uppercase() }}"
-        Card(modifier.fillMaxWidth().clickable {
+        Column(modifier.fillMaxWidth().clickable {
             if (item is LibraryItem.SeriesEntry) { LumosSession.selectedCollection = item.books.sortedBy(Book::fileName); startActivity(Intent(this, SeriesActivity::class.java)) }
             else openBook(book)
-        }, shape = LumosShape, border = lumosBorder(einkEnabled)) {
-            Column(Modifier.fillMaxSize().padding(7.dp)) {
-                Cover(book, Modifier.fillMaxWidth().weight(1f).clip(LumosShape))
-                Spacer(Modifier.height(7.dp)); Text(title, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
-                Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        }) {
+            Surface(Modifier.fillMaxWidth().aspectRatio(.68f), shape = LumosShape, border = lumosBorder(einkEnabled), tonalElevation = if (einkEnabled) 0.dp else 1.dp) {
+                Cover(book, Modifier.fillMaxSize())
             }
+            Spacer(Modifier.height(5.dp)); Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, lineHeight = 16.sp)
+            Spacer(Modifier.height(1.dp)); Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, lineHeight = 12.sp)
         }
     }
 
     @Composable
-    private fun SettingsScreen() = ResponsivePage("设置", onBack = ::showLibrary, bottom = {
-        BlackBackButton("返回书库", ::showLibrary)
-        Spacer(Modifier.height(8.dp)); OutlinedButton(::disconnect, Modifier.fillMaxWidth().height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("更换服务器") }
-    }) { wide ->
+    private fun SettingsScreen() {
         val entries = listOf(
             Triple("阅读统计", "阅读时长、趋势与常读书籍", ::loadStats), Triple("书架管理", "同步目录、分类和类型", ::loadShelves),
             Triple("字体库", "下载、上传和删除本地字体", ::loadFonts), Triple("缓存管理", "查看占用并设置容量上限", { page = AppPage.CACHE }),
         )
-        if (wide) entries.chunked(2).forEach { row -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { row.forEach { (title, body, action) -> Box(Modifier.weight(1f)) { SettingsCard(title, body, action) } }; if (row.size == 1) Spacer(Modifier.weight(1f)) } }
-        else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { entries.forEach { (title, body, action) -> SettingsCard(title, body, action) } }
-        Spacer(Modifier.height(14.dp)); Card(border = lumosBorder(einkEnabled)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("E‑INK 模式", fontWeight = FontWeight.Bold); Text(if (einkEnabled) "纯黑白与统一描边" else "关闭后使用系统莫奈动态取色", fontSize = 12.sp) }; Switch(einkEnabled, { enabled -> einkEnabled = enabled; prefs.edit().putBoolean("force_eink", enabled).apply() }) } }
+        Scaffold { padding -> BoxWithConstraints(Modifier.fillMaxSize().padding(padding).safeDrawingPadding().padding(16.dp)) {
+            val wide = maxWidth >= 720.dp
+            Column(Modifier.fillMaxSize()) {
+                Text("设置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(14.dp))
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (wide) items(entries.chunked(2)) { row -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) { row.forEach { (title, body, action) -> Box(Modifier.weight(1f)) { SettingsCard(title, body, action) } }; if (row.size == 1) Spacer(Modifier.weight(1f)) } }
+                    else items(entries) { (title, body, action) -> SettingsCard(title, body, action) }
+                    item { Card(border = lumosBorder(einkEnabled)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("E‑INK 模式", fontWeight = FontWeight.Bold); Text(if (einkEnabled) "纯黑白与统一描边" else "关闭后使用系统莫奈动态取色", fontSize = 12.sp) }; Switch(einkEnabled, { enabled -> einkEnabled = enabled; prefs.edit().putBoolean("force_eink", enabled).apply() }) } } }
+                }
+                Spacer(Modifier.height(12.dp))
+                if (wide) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BlackBackButton("返回书库", ::showLibrary, Modifier.weight(1f))
+                    OutlinedButton({ page = AppPage.ABOUT }, Modifier.weight(1f).height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("关于微光阅") }
+                    OutlinedButton(::disconnect, Modifier.weight(1f).height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("更换服务器") }
+                } else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BlackBackButton("返回书库", ::showLibrary)
+                    OutlinedButton({ page = AppPage.ABOUT }, Modifier.fillMaxWidth().height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("关于微光阅") }
+                    OutlinedButton(::disconnect, Modifier.fillMaxWidth().height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("更换服务器") }
+                }
+            }
+        } }
     }
 
     @Composable private fun SettingsCard(title: String, body: String, action: () -> Unit) = Card(Modifier.fillMaxWidth().clickable(onClick = action), border = lumosBorder(einkEnabled)) {
         Column(Modifier.padding(18.dp)) { Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Spacer(Modifier.height(4.dp)); Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+    }
+
+    @Composable
+    private fun AboutScreen() {
+        var checking by remember { mutableStateOf(false) }
+        var updateMessage by remember { mutableStateOf("") }
+        var releaseUrl by remember { mutableStateOf<String?>(null) }
+        Scaffold { padding -> Column(Modifier.fillMaxSize().padding(padding).safeDrawingPadding().padding(16.dp)) {
+            Text("关于微光阅", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(14.dp))
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Card(Modifier.fillMaxWidth(), border = lumosBorder(einkEnabled)) { Column(Modifier.padding(20.dp)) {
+                    Text("微光阅 LumosReader", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp)); Text("一个面向个人书库的开源阅读器，提供 Web 与 Android 客户端，支持 EPUB、漫画、阅读进度同步、自定义字体及 E‑INK 显示。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(12.dp)); Text("当前客户端版本：${currentVersionName()}", fontWeight = FontWeight.SemiBold)
+                } } }
+                item { OutlinedButton({ openExternal(PROJECT_URL) }, Modifier.fillMaxWidth().height(50.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("打开 GitHub 项目主页") } }
+                item { Button({
+                    checking = true; updateMessage = ""; releaseUrl = null
+                    checkForUpdates { result -> checking = false; result.onSuccess { info ->
+                        releaseUrl = info.url
+                        val current = currentVersionName()
+                        updateMessage = when {
+                            isVersionNewer(info.version, current) -> "发现新版本 ${info.version}"
+                            current.contains('-') -> "当前为开发版 $current；GitHub 最新正式版为 ${info.version}"
+                            else -> "已是最新版本（$current）"
+                        }
+                    }.onFailure { updateMessage = "检查失败：${it.message ?: "无法访问 GitHub Releases"}" } }
+                }, Modifier.fillMaxWidth().height(50.dp), enabled = !checking, shape = LumosShape, border = lumosBorder(einkEnabled), colors = lumosButtonColors(einkEnabled)) { if (checking) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) else Text("检查更新") } }
+                if (updateMessage.isNotBlank()) item { Card(Modifier.fillMaxWidth(), border = lumosBorder(einkEnabled)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text(updateMessage, Modifier.weight(1f)); releaseUrl?.takeIf { updateMessage.startsWith("发现新版本") }?.let { url -> TextButton({ openExternal(url) }) { Text("查看 Release") } } } } }
+            }
+            Spacer(Modifier.height(10.dp)); BlackBackButton("返回设置", ::showSettings)
+        } }
     }
 
     @Composable
@@ -327,9 +398,9 @@ class MainActivity : ComponentActivity() {
         OutlinedButton({ picker.launch(arrayOf("font/ttf", "font/otf", "font/woff", "font/woff2", "application/octet-stream")) }, border = lumosBorder(einkEnabled), colors = lumosOutlinedButtonColors(einkEnabled)) { Text("上传字体") }
         Text("字体保存在 Downloads/LumosReader/Fonts", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
         Spacer(Modifier.height(12.dp))
-        val rows = fonts.map { it.name to it } + locals.filter { local -> fonts.none { it.name == local.name } }.map { it.name to null }
+        val rows = fonts.distinctBy { it.name.lowercase() }.map { it.name to it } + locals.filter { local -> fonts.none { it.name.equals(local.name, ignoreCase = true) } }.map { it.name to null }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { rows.forEach { (name, remote) ->
-            val local = locals.firstOrNull { it.name == name }; var progress by remember(name) { mutableIntStateOf(-1) }
+            val local = locals.firstOrNull { it.name.equals(name, ignoreCase = true) }; var progress by remember(name.lowercase()) { mutableIntStateOf(-1) }
             Card(border = lumosBorder(einkEnabled)) { Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Aa", style = MaterialTheme.typography.headlineSmall); Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) { Text(name, fontWeight = FontWeight.Bold, maxLines = 1); Text(if (local != null) "已下载 · ${formatBytes(local.size)}" else "服务器字体 · ${formatBytes(remote?.size?.toLong() ?: 0)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 if (progress >= 0) CircularProgressIndicator({ progress / 100f }, Modifier.size(38.dp))
@@ -403,7 +474,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @Composable private fun BlackBackButton(label: String, action: () -> Unit) = Button(action, Modifier.fillMaxWidth().height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = if (einkEnabled) ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black) else ButtonDefaults.buttonColors(containerColor = Color.Black, contentColor = Color.White)) { Text(label) }
+    @Composable private fun BlackBackButton(label: String, action: () -> Unit, modifier: Modifier = Modifier.fillMaxWidth()) = Button(action, modifier.height(48.dp), shape = LumosShape, border = lumosBorder(einkEnabled), colors = if (einkEnabled) ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black) else ButtonDefaults.buttonColors(containerColor = Color.Black, contentColor = Color.White)) { Text(label) }
     @Composable private fun ErrorText() { if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
     @Composable private fun CenteredPane(content: @Composable ColumnScope.() -> Unit) = Box(Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.Center) { Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp), content = content) }
 
@@ -436,9 +507,49 @@ class MainActivity : ComponentActivity() {
         LumosSession.connect(address, cookie) { result -> loading = false; result.onSuccess { (info, session) -> server = info; prefs.edit().putString("address", LumosSession.client?.baseUrl()).apply(); if (session.authenticated || !info.authRequired) { persistCookie(); loadBooks() } else page = AppPage.LOGIN }.onFailure { page = AppPage.CONNECTION; error = (if (automatic) "上次的服务器暂时无法连接：" else "") + LumosSession.friendlyError(it) } }
     }
     private fun login(password: String) { loading = true; LumosSession.login(password) { result -> loading = false; result.onSuccess { persistCookie(); loadBooks() }.onFailure { error = LumosSession.friendlyError(it) } } }
-    private fun loadBooks(scanAfter: Boolean = true) { loading = true; LumosSession.books { result -> loading = false; result.onSuccess { books = it; page = AppPage.LIBRARY; if (scanAfter && !autoScanStarted) { autoScanStarted = true; scanLibrary() } }.onFailure { error = LumosSession.friendlyError(it); if (books.isNotEmpty()) page = AppPage.LIBRARY else page = AppPage.CONNECTION } } }
+    private fun loadBooks(scanAfter: Boolean = true) { loading = true; LumosSession.books { result -> loading = false; result.onSuccess { books = it; page = AppPage.LIBRARY; scheduleRecentIndexWarmup(it); if (scanAfter && !autoScanStarted) { autoScanStarted = true; scanLibrary() } }.onFailure { error = LumosSession.friendlyError(it); if (books.isNotEmpty()) page = AppPage.LIBRARY else page = AppPage.CONNECTION } } }
+
+    private fun scheduleRecentIndexWarmup(values: List<Book>) {
+        indexWarmup?.let(warmupHandler::removeCallbacks)
+        val book = values.asSequence().filter { it.format.equals("epub", true) && it.size.toLong() > 0 && it.progressTime.isNotBlank() }.maxByOrNull(Book::progressTime) ?: return
+        if (readerCache.epubIndex(book.id, book.size.toLong()) != null) return
+        val task = Runnable {
+            LumosSession.task({ result -> result.onFailure { Log.d("LumosOpen", "index warmup skipped book=${book.id}", it) } }) {
+                if (readerCache.epubIndex(book.id, book.size.toLong()) == null) {
+                    LocalBookParser.parseRemoteEpub(book.size.toLong(), null, { bytes -> readerCache.putEpubIndex(book.id, book.size.toLong(), bytes) }) { start, end ->
+                        readerCache.blockedRange(book.id, book.size.toLong(), start, end) { blockStart, blockEnd ->
+                            LumosSession.rangeBlocking("/api/books/${book.id}/content", blockStart, blockEnd)
+                        }
+                    }
+                }
+            }
+        }
+        indexWarmup = task
+        warmupHandler.postDelayed(task, 250)
+    }
+
+    override fun onDestroy() {
+        indexWarmup?.let(warmupHandler::removeCallbacks)
+        super.onDestroy()
+    }
     private fun showLibrary() { page = AppPage.LIBRARY; error = "" }
     private fun showSettings() { page = AppPage.SETTINGS; error = "" }
+    private fun currentVersionName(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+    private fun openExternal(url: String) { runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }.onFailure { banner = "无法打开链接" } }
+    private fun checkForUpdates(callback: (Result<ReleaseInfo>) -> Unit) = LumosSession.task(callback) {
+        val connection = (URL(RELEASE_API).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 8_000; readTimeout = 8_000
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "LumosReader-Android/${currentVersionName()}")
+        }
+        try {
+            val code = connection.responseCode
+            require(code in 200..299) { "GitHub 返回 HTTP $code" }
+            val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            val tag = json.getString("tag_name")
+            ReleaseInfo(requireNotNull(extractVersion(tag)) { "无法识别 Release 版本：$tag" }, json.getString("html_url"))
+        } finally { connection.disconnect() }
+    }
     private fun scanLibrary() { if (scanning) return; scanning = true; val known = books.map(Book::id).toSet(); LumosSession.scan { result -> result.onSuccess { LumosSession.books { refreshed -> scanning = false; refreshed.onSuccess { updated -> val added = updated.count { it.id !in known }; val removed = books.count { old -> updated.none { it.id == old.id } }; books = updated; banner = if (added + removed == 0) "扫描完成，书库已经是最新" else "扫描完成：新增 $added 本，移除 $removed 本" }.onFailure { banner = LumosSession.friendlyError(it) } } }.onFailure { scanning = false; banner = LumosSession.friendlyError(it) } } }
     private fun loadStats() { loading = true; LumosSession.stats { result -> loading = false; result.onSuccess { stats = it; page = AppPage.STATS }.onFailure { banner = LumosSession.friendlyError(it) } } }
     private fun loadFonts() { loading = true; LumosSession.fonts { result -> loading = false; result.onSuccess { fonts = it; page = AppPage.FONTS }.onFailure { banner = LumosSession.friendlyError(it) } } }
@@ -453,6 +564,19 @@ class MainActivity : ComponentActivity() {
 }
 
 private data class ComposeLibraryPage(val title: String, val subtitle: String, val items: List<LibraryItem>)
+private data class ReleaseInfo(val version: String, val url: String)
+private const val PROJECT_URL = "https://github.com/Alumos/LumosReader"
+private const val RELEASE_API = "https://api.github.com/repos/Alumos/LumosReader/releases/latest"
+private fun extractVersion(value: String): String? = Regex("(?i)(?:android-)?v?(\\d+(?:\\.\\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)").find(value.trim())?.groupValues?.get(1)
+private fun isVersionNewer(candidate: String, current: String): Boolean {
+    fun parts(value: String) = extractVersion(value).orEmpty().substringBefore('-').substringBefore('+').split('.').map { it.toIntOrNull() ?: 0 }
+    val left = parts(candidate); val right = parts(current)
+    repeat(maxOf(left.size, right.size)) { index ->
+        val comparison = left.getOrElse(index) { 0 }.compareTo(right.getOrElse(index) { 0 })
+        if (comparison != 0) return comparison > 0
+    }
+    return false
+}
 private sealed interface LibraryItem {
     data class Header(val title: String) : LibraryItem
     data class BookEntry(val book: Book) : LibraryItem

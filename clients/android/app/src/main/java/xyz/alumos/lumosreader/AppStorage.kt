@@ -8,6 +8,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import android.os.SystemClock
+import android.util.Log
 
 data class LocalFont(val name: String, val size: Long, val uri: Uri)
 
@@ -18,17 +20,23 @@ class FontStorage(private val context: Context) {
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
         context.contentResolver.query(
             collection,
-            arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.SIZE),
-            "${MediaStore.Downloads.RELATIVE_PATH}=?",
-            arrayOf(RELATIVE_PATH),
+            arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.SIZE, MediaStore.Downloads.RELATIVE_PATH),
+            "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?",
+            arrayOf("%LumosReader/Fonts/%"),
             "${MediaStore.Downloads.DISPLAY_NAME} COLLATE NOCASE",
         )?.use { cursor ->
             buildList {
-                while (cursor.moveToNext()) add(LocalFont(cursor.getString(1), cursor.getLong(2), ContentUris.withAppendedId(collection, cursor.getLong(0))))
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(1) ?: continue
+                    val path = cursor.getString(3).orEmpty().replace('\\', '/').trim('/')
+                    if (path.endsWith("LumosReader/Fonts", ignoreCase = true) && name.substringAfterLast('.', "").lowercase() in EXTENSIONS) {
+                        add(LocalFont(name, cursor.getLong(2), ContentUris.withAppendedId(collection, cursor.getLong(0))))
+                    }
+                }
             }
-        }.orEmpty()
+        }.orEmpty().distinctBy { it.name.lowercase() }
     } else {
-        legacyDirectory.listFiles()?.filter(File::isFile)?.map { LocalFont(it.name, it.length(), Uri.fromFile(it)) }.orEmpty()
+        legacyDirectory.listFiles()?.filter { it.isFile && it.extension.lowercase() in EXTENSIONS }?.map { LocalFont(it.name, it.length(), Uri.fromFile(it)) }?.distinctBy { it.name.lowercase() }.orEmpty()
     }
 
     fun save(name: String, bytes: ByteArray) {
@@ -58,7 +66,7 @@ class FontStorage(private val context: Context) {
     }
 
     fun delete(name: String): Boolean {
-        val font = list().firstOrNull { it.name == name } ?: return false
+        val font = list().firstOrNull { it.name.equals(name, ignoreCase = true) } ?: return false
         return if (font.uri.scheme == "file") File(requireNotNull(font.uri.path)).delete()
         else context.contentResolver.delete(font.uri, null, null) > 0
     }
@@ -96,6 +104,19 @@ class ReaderCache(private val context: Context) {
     fun sizeBytes(): Long = context.cacheDir.walkTopDown().filter(File::isFile).sumOf(File::length)
     private fun managedSizeBytes(): Long = directory.walkTopDown().filter(File::isFile).sumOf(File::length)
     fun file(bookId: String, extension: String): File = File(directory, "${bookId.filter(Char::isLetterOrDigit)}.$extension")
+    fun epubIndex(bookId: String, bookSize: Long): ByteArray? {
+        val target = epubIndexFile(bookId, bookSize)
+        return target.takeIf(File::isFile)?.let { runCatching { it.readBytes().also { touch(target) } }.getOrNull() }
+    }
+    fun putEpubIndex(bookId: String, bookSize: Long, bytes: ByteArray) {
+        require(bytes.isNotEmpty())
+        val target = epubIndexFile(bookId, bookSize)
+        val part = File(target.parentFile, "${target.name}.part")
+        part.delete(); part.writeBytes(bytes); target.delete()
+        check(part.renameTo(target)) { "无法保存 EPUB 索引" }
+        touch(target)
+    }
+    private fun epubIndexFile(bookId: String, bookSize: Long) = File(directory, "${bookId.filter(Char::isLetterOrDigit)}-$bookSize.epub-index")
     fun range(bookId: String, start: Long, endInclusive: Long, loader: () -> ByteArray): ByteArray {
         val ranges = File(directory, "${bookId.filter(Char::isLetterOrDigit)}.ranges").apply { mkdirs() }
         val expected = endInclusive - start + 1
@@ -107,8 +128,16 @@ class ReaderCache(private val context: Context) {
         val candidate = Any()
         val lock = rangeLocks.putIfAbsent(key, candidate) ?: candidate
         return synchronized(lock) {
-            if (target.isFile && target.length() == expected) { touch(target); return@synchronized target.readBytes() }
+            if (target.isFile && target.length() == expected) {
+                val started = SystemClock.elapsedRealtime()
+                val bytes = target.readBytes()
+                Log.i("LumosOpen", "range cache hit start=$start bytes=$expected readMs=${SystemClock.elapsedRealtime() - started}")
+                touch(target)
+                return@synchronized bytes
+            }
+            val started = SystemClock.elapsedRealtime()
             val bytes = loader()
+            Log.i("LumosOpen", "range network start=$start bytes=$expected loadMs=${SystemClock.elapsedRealtime() - started}")
             require(bytes.size.toLong() == expected) { "Range 响应长度无效" }
             val part = File(ranges, "${target.name}.part")
             part.delete(); part.writeBytes(bytes); target.delete()

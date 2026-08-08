@@ -13,7 +13,9 @@ android {
         minSdk = 23
         targetSdk = 36
         versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
-        versionName = providers.gradleProperty("versionName").orNull ?: "0.1.0"
+        // Tagged release builds override this with -PversionName from android-vX.Y.Z.
+        // Untagged local/CI APKs must identify themselves as development builds.
+        versionName = providers.gradleProperty("versionName").orNull ?: "0.1.3-dev"
     }
 
     signingConfigs {

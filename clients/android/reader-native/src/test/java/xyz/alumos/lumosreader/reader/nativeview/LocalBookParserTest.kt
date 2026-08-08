@@ -8,6 +8,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.system.measureTimeMillis
 
 class LocalBookParserTest {
     @Test fun parsesEpubSpineAndRelativePaths() {
@@ -53,6 +54,38 @@ class LocalBookParserTest {
         }
         val parsed = LocalBookParser.parse(file, "epub")
         assertEquals(listOf("第一章 开始", "第二章 继续"), parsed.chapters.map(NativeChapter::title))
+        file.delete()
+    }
+
+    @Test fun parsesLargeEpub2NavigationInLinearTime() {
+        val count = 6_100
+        val file = File.createTempFile("lumos-large-ncx-", ".epub")
+        ZipOutputStream(file.outputStream()).use { zip ->
+            fun entry(name: String, content: String) { zip.putNextEntry(ZipEntry(name)); zip.write(content.toByteArray()); zip.closeEntry() }
+            val manifest = buildString {
+                append("<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>")
+                repeat(count) { append("<item id=\"c$it\" href=\"$it.xhtml\"/>") }
+            }
+            val spine = buildString { repeat(count) { append("<itemref idref=\"c$it\"/>") } }
+            val ncx = buildString {
+                append("<ncx><navMap>")
+                repeat(count) { append("<navPoint><navLabel><text>Chapter $it</text></navLabel><content src=\"$it.xhtml\"/></navPoint>") }
+                append("</navMap></ncx>")
+            }
+            entry("META-INF/container.xml", """<container><rootfiles><rootfile full-path="OPS/content.opf"/></rootfiles></container>""")
+            entry("OPS/content.opf", "<package><manifest>$manifest</manifest><spine toc=\"ncx\">$spine</spine></package>")
+            entry("OPS/toc.ncx", ncx)
+            repeat(count) { entry("OPS/$it.xhtml", "<html><body>Body $it</body></html>") }
+        }
+        lateinit var parsed: NativeDocument
+        var index: ByteArray? = null
+        val elapsed = measureTimeMillis { parsed = LocalBookParser.parse(file, "epub", onEpubIndex = { index = it }) }
+        assertEquals(count, parsed.chapters.size)
+        assertEquals("Chapter 6099", parsed.chapters.last().title)
+        assertTrue("large NCX parse took ${elapsed}ms", elapsed < 3_000)
+        val indexedElapsed = measureTimeMillis { parsed = LocalBookParser.parse(file, "epub", index) }
+        assertEquals("Chapter 6099", parsed.chapters.last().title)
+        assertTrue("cached index parse took ${indexedElapsed}ms", indexedElapsed < elapsed)
         file.delete()
     }
 

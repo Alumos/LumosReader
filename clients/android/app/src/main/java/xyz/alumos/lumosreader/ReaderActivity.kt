@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
 import android.os.ProxyFileDescriptorCallback
+import android.os.SystemClock
 import android.os.storage.StorageManager
 import android.system.ErrnoException
 import android.system.OsConstants
@@ -62,6 +63,7 @@ import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 class ReaderActivity : androidx.activity.ComponentActivity() {
+    private val openStartedAt = SystemClock.elapsedRealtime()
     private val book: Book by lazy { requireNotNull(LumosSession.selectedBook) }
     private val einkMode by lazy { isEInkDevice() }
     private val eink by lazy { EInkControllers.create(einkMode) }
@@ -102,16 +104,19 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
     private var deleteTemplateName by mutableStateOf<String?>(null)
     private var catalogKind by mutableStateOf(CatalogKind.CHAPTERS)
     private val textChapterLoading = mutableSetOf<Int>()
+    @Volatile private var readerDestroyed = false
 
     private enum class ReaderPanel { CHAPTERS, STYLE }
     private enum class CatalogKind { VOLUMES, CHAPTERS }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        openTrace("activity created")
         settings = settingsStore.load(einkMode)
         window.statusBarColor = Color.WHITE; window.navigationBarColor = Color.WHITE
         stage = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
         setContent { ReaderComposeShell() }
+        openTrace("compose installed")
         startedAt = System.currentTimeMillis()
         when (book.format) {
             "cbz" -> openComic()
@@ -383,6 +388,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
     private fun openDocument() {
         val view = NativeTextPageView(this).also { textView = it; applyTextSettings(it) }
         stage.addView(view, FrameLayout.LayoutParams(-1, -1)); view.onCenter = ::toggleChrome
+        openTrace("text view attached")
         documentImageView = BitmapPageView(this).apply {
             visibility = View.GONE
             onPrevious = ::previous
@@ -394,7 +400,17 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         view.onEndReached = { if (chapter + 1 < (document?.chapters?.size ?: 0)) showChapter(chapter + 1, 0.0) }
         val file = cache.file(book.id, book.format)
         documentFile = file
-        fun parseLocal() = LumosSession.task({ result -> result.onSuccess { loaded -> document = loaded; seekTo(book.progress) }.onFailure { showFailure(it.message ?: "无法解析书籍") } }) { LocalBookParser.parse(file, book.format) }
+        fun acceptDocument(source: String, loaded: NativeDocument) {
+            if (readerDestroyed || isFinishing) return
+            document = loaded
+            openTrace("$source metadata ready chapters=${loaded.chapters.size}")
+            seekTo(book.progress)
+        }
+        fun parseLocal() = LumosSession.task({ result -> result.onSuccess { loaded -> acceptDocument("local", loaded) }.onFailure { showFailure(it.message ?: "无法解析书籍") } }) {
+            LocalBookParser.parse(file, book.format, cache.epubIndex(book.id, book.size.toLong())) { bytes ->
+                cache.putEpubIndex(book.id, book.size.toLong(), bytes)
+            }
+        }
         fun downloadLocal() {
             val part = File(file.parentFile, "${file.name}.part")
             part.delete()
@@ -404,10 +420,15 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
                 cache.touch(file); parseLocal()
             }.onFailure { part.delete(); showFailure(LumosSession.friendlyError(it)) } }
         }
-        if (file.isFile && file.length() == book.size.toLong()) { cache.touch(file); parseLocal() }
+        if (file.isFile && file.length() == book.size.toLong()) { openTrace("full-file cache hit bytes=${file.length()}"); cache.touch(file); parseLocal() }
         else if (book.format.equals("epub", ignoreCase = true) && book.size.toLong() > 0) {
-            LumosSession.task({ result -> result.onSuccess { loaded -> document = loaded; seekTo(book.progress) }.onFailure { downloadLocal() } }) {
-                LocalBookParser.parseRemoteEpub(book.size.toLong()) { start, end ->
+            openTrace("using range EPUB bytes=${book.size}")
+            LumosSession.task({ result -> result.onSuccess { loaded -> acceptDocument("range", loaded) }.onFailure { error -> openTrace("range parse failed=${error.javaClass.simpleName}"); downloadLocal() } }) {
+                LocalBookParser.parseRemoteEpub(
+                    book.size.toLong(),
+                    cache.epubIndex(book.id, book.size.toLong()),
+                    { bytes -> cache.putEpubIndex(book.id, book.size.toLong(), bytes) },
+                ) { start, end ->
                     cache.blockedRange(book.id, book.size.toLong(), start, end) { blockStart, blockEnd ->
                         LumosSession.rangeBlocking("/api/books/${book.id}/content", blockStart, blockEnd)
                     }
@@ -421,8 +442,11 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         chapter = index.coerceIn(doc.chapters.indices)
         val requestedChapter = chapter
         if (doc.isLazy && !doc.isChapterLoaded(chapter)) {
+            openTrace("chapter load start index=$requestedChapter")
             composeStatus = "正在加载 ${doc.chapters[chapter].title}"
             LumosSession.task({ result -> result.onSuccess { loaded ->
+                if (readerDestroyed || isFinishing) return@onSuccess
+                openTrace("chapter load complete index=$requestedChapter chars=${loaded.text.length}")
                 if (document === doc && chapter == requestedChapter) {
                     showChapter(requestedChapter, fraction)
                 }
@@ -439,6 +463,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         } else {
             documentImageView?.visibility = View.GONE; textView?.visibility = View.VISIBLE
             textView?.setChapter(item.title, item.text, fraction)
+            openTrace("first text committed index=$requestedChapter chars=${item.text.length} pages=${textView?.pageCount}")
             preloadTextAround(doc, requestedChapter)
         }
     }
@@ -510,6 +535,10 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
     private fun next() { textView?.let { if (document?.chapters?.getOrNull(chapter)?.imageEntry != null) { if (chapter + 1 < (document?.chapters?.size ?: 0)) showChapter(chapter + 1) } else it.next() } ?: (comic?.next() ?: pdf?.next()) }
     private fun seekTo(value: Double) { textView?.let { val count = document?.chapters?.size ?: 1; val exact = value * count; showChapter(exact.toInt().coerceAtMost(count - 1), exact % 1) } ?: pdf?.show((value * ((pdf?.count ?: 1) - 1)).toInt()) }
 
+    private fun openTrace(message: String) {
+        Log.i("LumosOpen", "+${SystemClock.elapsedRealtime() - openStartedAt}ms $message book=${book.id}")
+    }
+
     private fun applyAndSave() { settingsStore.save(settings); textView?.let(::applyTextSettings) }
 
     private fun builtInTemplates(): List<Pair<String, ReaderSettings>> = listOf(
@@ -561,6 +590,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         else -> super.onKeyDown(keyCode, event)
     }
     override fun onDestroy() {
+        readerDestroyed = true
         fixedPageGeneration.incrementAndGet()
         fixedPageCache.values.forEach { it.takeIf { bitmap -> !bitmap.isRecycled }?.recycle() }
         fixedPageCache.clear(); fixedPageLoading.clear()
