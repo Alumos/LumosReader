@@ -15,7 +15,7 @@ android {
         versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
         // Tagged release builds override this with -PversionName from android-vX.Y.Z.
         // Untagged local/CI APKs must identify themselves as development builds.
-        versionName = providers.gradleProperty("versionName").orNull ?: "0.1.3-dev"
+        versionName = providers.gradleProperty("versionName").orNull ?: "0.1.4-dev"
     }
 
     signingConfigs {

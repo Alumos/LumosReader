@@ -48,6 +48,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import xyz.alumos.lumosreader.core.LumosSession
@@ -135,8 +136,26 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         val background = when { dark -> ComposeColor(0xFF121412); settings.background == "green" && !einkMode -> ComposeColor(0xFFE8F1E5); else -> ComposeColor.White }
         val foreground = if (dark) ComposeColor.White else ComposeColor.Black
         LumosTheme(einkMode, dark) {
-            Box(Modifier.fillMaxSize().background(background).safeDrawingPadding()) {
-                AndroidView(factory = { stage }, modifier = Modifier.fillMaxSize())
+            val safePadding = WindowInsets.safeDrawing.asPaddingValues()
+            val layoutDirection = LocalLayoutDirection.current
+            // Reader pages must stay centered against the physical screen. A landscape
+            // navigation bar or display cutout can make safeDrawing's start/end insets
+            // asymmetric, so reserve the larger inset on both sides of the page.
+            val horizontalSafePadding = maxOf(
+                safePadding.calculateStartPadding(layoutDirection),
+                safePadding.calculateEndPadding(layoutDirection),
+            )
+            Box(Modifier.fillMaxSize().background(background)) {
+                AndroidView(
+                    factory = { stage },
+                    modifier = Modifier.fillMaxSize().padding(
+                        start = horizontalSafePadding,
+                        top = safePadding.calculateTopPadding(),
+                        end = horizontalSafePadding,
+                        bottom = safePadding.calculateBottomPadding(),
+                    ),
+                )
+                Box(Modifier.fillMaxSize().safeDrawingPadding()) {
                 Text(
                     composeStatus,
                     Modifier.align(Alignment.BottomEnd).fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
@@ -173,6 +192,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
                     ReaderPanel.CHAPTERS -> ChapterPanel(Modifier.align(Alignment.Center))
                     ReaderPanel.STYLE -> StylePanel(Modifier.align(Alignment.Center))
                     null -> Unit
+                }
                 }
             }
         }
@@ -297,7 +317,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
                     ) { Box(Modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) { Text(name, maxLines = 1) } }
                 }
             }
-            ValueSlider("正文字号", settings.fontSize.toFloat(), 12f..28f, "${settings.fontSize} sp") { settings = settings.copy(fontSize = it.toInt()); applyAndSave() }
+            ValueSlider("正文字号", settings.fontSize.toFloat(), 10f..36f, "${settings.fontSize} sp") { settings = settings.copy(fontSize = it.toInt()); applyAndSave() }
             Text("阅读背景", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { listOf("白色" to "white", "浅绿" to "green", "黑色" to "black").forEach { (label, value) -> androidx.compose.material3.FilterChip((if (einkMode) "white" else settings.background) == value, { if (!einkMode || value == "white") { settings = settings.copy(background = value); applyAndSave() } }, { Text(label) }, enabled = !einkMode || value == "white", border = lumosBorder(einkMode), colors = lumosFilterChipColors(einkMode)) } }
             val fonts = remember { FontStorage(this@ReaderActivity).list() }
@@ -305,9 +325,9 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
             FontDropdown("标题字体", settings.titleFontName, fonts) { settings = settings.copy(titleFontName = it); applyAndSave() }
             FontDropdown("正文字体", settings.fontName, fonts) { settings = settings.copy(fontName = it); applyAndSave() }
             Text("自定义模板", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.OutlinedTextField(templateNameDraft, { templateNameDraft = it }, Modifier.weight(1f).height(56.dp), label = { Text("新模板名称") }, singleLine = true, shape = LumosShape)
-                androidx.compose.material3.Button({ val name = templateNameDraft.trim(); if (name.isNotEmpty() && customTemplates.size < 3) { settingsStore.saveTemplate(name, settings); settings = settings.copy(templateName = name); settingsStore.save(settings); templateNameDraft = ""; templateRevision++ } }, Modifier.width(96.dp).height(56.dp), enabled = customTemplates.size < 3, shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("保存") }
+            Row(Modifier.fillMaxWidth().height(60.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.OutlinedTextField(templateNameDraft, { templateNameDraft = it }, Modifier.weight(1f).fillMaxHeight(), label = { Text("新模板名称") }, singleLine = true, shape = LumosShape)
+                androidx.compose.material3.Button({ val name = templateNameDraft.trim(); if (name.isNotEmpty() && customTemplates.size < 3) { settingsStore.saveTemplate(name, settings); settings = settings.copy(templateName = name); settingsStore.save(settings); templateNameDraft = ""; templateRevision++ } }, Modifier.width(96.dp).fillMaxHeight(), enabled = customTemplates.size < 3, shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("保存") }
             }
         }
         Spacer(Modifier.height(12.dp)); androidx.compose.material3.Button({ styleAdvanced = true }, Modifier.fillMaxWidth().height(48.dp), shape = LumosShape, border = lumosBorder(einkMode), colors = lumosButtonColors(einkMode)) { Text("更多设置") }
@@ -568,7 +588,7 @@ class ReaderActivity : androidx.activity.ComponentActivity() {
         view.applyStyle(NativeTextPageView.Style(
             textSizeSp = settings.fontSize.toFloat(), lineSpacing = settings.lineSpacing,
             leftPaddingDp = if (settings.customMargins) settings.leftMargin else settings.margin,
-            rightPaddingDp = if (settings.customMargins) settings.leftMargin else settings.margin,
+            rightPaddingDp = if (settings.customMargins) settings.rightMargin else settings.margin,
             topPaddingDp = if (settings.customMargins) settings.topMargin else 24,
             bottomPaddingDp = if (settings.customMargins) settings.bottomMargin else 28,
             alignment = settings.alignment,

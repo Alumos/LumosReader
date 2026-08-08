@@ -141,12 +141,19 @@ class NativeTextPageView(context: Context) : View(context) {
         onPageChanged?.invoke(page, pageCount)
     }
 
-    @SuppressLint("WrongConstant")
+    @SuppressLint("WrongConstant", "NewApi")
     private fun applyJustification(builder: StaticLayout.Builder) {
         if (Build.VERSION.SDK_INT >= 26 && style.alignment == "justify") {
-            // Android 36 annotates this parameter with LineBreaker constants,
-            // while API 26-28 only expose the equivalent Layout constant.
-            builder.setJustificationMode(Layout.JUSTIFICATION_MODE_INTER_WORD)
+            // Chinese prose normally has no spaces. INTER_WORD leaves the unused
+            // fraction of a character at every line end, which looks like a wider
+            // right margin even though both numeric paddings are identical.
+            // Android 15 added the correct inter-character justification mode.
+            val mode = if (Build.VERSION.SDK_INT >= 35) {
+                Layout.JUSTIFICATION_MODE_INTER_CHARACTER
+            } else {
+                Layout.JUSTIFICATION_MODE_INTER_WORD
+            }
+            builder.setJustificationMode(mode)
         }
     }
 
